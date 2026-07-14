@@ -128,7 +128,7 @@ function parsePage(payload: unknown): ApiPage {
   if (resultCode === "K03") {
     return { items: [], totalCount: 0 };
   }
-  if (resultCode !== undefined && resultCode !== "00") {
+  if (resultCode !== undefined && resultCode !== "00" && resultCode !== "K0") {
     throw new MinwonApiError("upstream_error", "민원실 정보를 불러오지 못했습니다.");
   }
 

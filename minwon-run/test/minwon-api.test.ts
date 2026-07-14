@@ -59,6 +59,19 @@ test("normalizes a single office item and sends only documented query parameters
   });
 });
 
+test("accepts the live gateway's top-level K0 success envelope", async () => {
+  const payload = await fixture("minwon-info.json") as {
+    response: { header: Record<string, unknown>; body: Record<string, unknown> };
+  };
+  const fetch = vi.fn(async () => jsonResponse({
+    header: { ...payload.response.header, resultCode: "K0", resultMsg: "NORMAL_SERVICE" },
+    body: payload.response.body,
+  }));
+  const api = new MinwonApi({ serviceKey: "secret-key", fetch });
+
+  await expect(api.listOffices("2900000000")).resolves.toHaveLength(1);
+});
+
 test("normalizes official wait fields, aggregates counters, and retains the newest observation", async () => {
   const fetch = vi.fn(async (_input: string) => jsonResponse(await fixture("minwon-wait.json")));
   const api = new MinwonApi({ serviceKey: "secret-key", fetch });
