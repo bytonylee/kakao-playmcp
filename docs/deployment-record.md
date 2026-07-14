@@ -6,9 +6,11 @@ Last verified: 2026-07-15 (Asia/Seoul)
 
 - Public repository: `https://github.com/bytonylee/kakao-playmcp`
 - Deployment branch: `main`
-- Verified source: current `main` after the security-hardening update
+- Verified source revision: `e66498d`
 - Minwon Run Dockerfile: `minwon-run/Dockerfile`
 - My Recall Dockerfile: `naekkeo-recall/Dockerfile`
+- Minwon Run local image: `sha256:e0bfa8365fb8bc94c83a05ca982930dbcbb36b3703d4137ef2b46a03e0aab04a`
+- My Recall local image: `sha256:614eca20b612d41dc8a06ecd1dee1c001d994621eb1a589ac2a45318846f007b`
 - Both local images were built as `linux/amd64`, run as the unprivileged `node` user, use root-owned read-only application files, and reported healthy with read-only root filesystems, all capabilities dropped, and `no-new-privileges` enabled.
 
 ## Verification
@@ -16,7 +18,7 @@ Last verified: 2026-07-15 (Asia/Seoul)
 - Minwon Run: 53 tests passed; typecheck, build, production dependency audit, Docker health, and local/external MCP smoke checks passed.
 - My Recall: 59 tests passed; typecheck, build, production dependency audit, Docker health, and local/external MCP smoke checks passed.
 - Secret scan passed across Git history, tracked files, and working-tree files.
-- Security regression checks confirm JSON-RPC batches return 400, untrusted browser origins return 403, redirects are disabled, validated request concurrency is bounded, slow request reads are timed out, and upstream bodies, fields, and record counts are capped. Per-client rate limiting remains a trusted-gateway deployment control rather than a process-wide counter.
+- Security regression checks confirm JSON-RPC batches return 400, untrusted browser origins return 403, redirects are disabled, validated request concurrency is bounded, partial request bodies are disconnected after about 10.03 seconds, and upstream bodies, fields, and record counts are capped. Per-client rate limiting remains a trusted-gateway deployment control rather than a process-wide counter.
 - Twelve full MCP smoke sequences averaged 144.2 ms for Minwon Run and 113.4 ms for My Recall; the slowest samples were 281.4 ms and 220.4 ms respectively.
 
 ## External Registration
