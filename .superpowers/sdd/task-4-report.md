@@ -53,3 +53,20 @@ git diff --check: exit 0
 ## Remaining Risk
 
 Fixtures follow the published SafetyKorea Open API interface design v2.0, but a live request still requires a runtime-issued service ID. Production validation should confirm provider availability, result-code behavior, and field completeness with that credential.
+
+## Review Finding Remediation
+
+### Red
+
+`cd naekkeo-recall && npm test -- test/matcher.test.ts test/safety-korea-api.test.ts` exited 1 with 10 expected failures. The matcher returned `confirmed` when both input and recall data contained `공급자적합성` or `CB1`, and generated a candidate from the one-character model token `A`. After a successful lookup, timeout, HTTP, network, and `4000`/`4001`/`4005`/`5000` provider failures left `availability` as `available`.
+
+### Green
+
+`cd naekkeo-recall && npm test && npm run typecheck` and `git diff --check` passed: 3 test files and 29 tests passed, and `tsc --noEmit` exited 0. The repository-wide `minwon-run` test and typecheck were also attempted, but currently fail because externally added, untracked Task 3 tests import absent `src/http.ts` and `src/mcp.ts`; no `minwon-run` file was modified for this Task 4 fix.
+
+### Safety Rules Added
+
+- `confirmed` now requires a unique exact match where both values use a conservative KC identifier shape: a sufficiently long letter/number identifier with a final hyphenated serial segment, or the structured `R-*-...` radio-equipment form. Descriptive values, non-ASCII text, and short values cannot confirm a recall.
+- Model and product matching only uses identifiers: two or more digits, two or more Hangul syllables, non-generic English tokens of at least three characters, mixed letter-number identifiers, or a one-letter-plus-number combination such as `A-123`. Standalone one-character tokens and generic descriptors such as `Pro` do not create candidates.
+- A parsed `2004` no-data result remains official data that is `available`. Every failed upstream request, including provider error codes, HTTP/network errors, malformed responses, and timeouts, changes availability to `unavailable` before returning the error so stale availability is not exposed.
+- Added coverage for `2004`, `4000`, `4001`, `4005`, `5000`, success-then-failure availability changes, `공급자적합성`, short cert values, standalone one-character tokens, generic `Pro`, and the valid `A-123` model combination.

@@ -25,6 +25,20 @@ test("confirms an exact certification-number match", () => {
   ]);
 });
 
+test.each(["공급자적합성", "CB1"])("does not confirm a non-certification description or short value (%s)", (certificationNumber) => {
+  const describedCandidate: RecallRecord = {
+    ...candidates[0],
+    certificationNumbers: [certificationNumber],
+  };
+
+  expect(matchRecall({ certificationNumber }, [describedCandidate])).toEqual([
+    {
+      level: "no_match",
+      reasons: ["공식 데이터에서 일치 항목을 찾지 못함. 이는 제품의 안전을 보장하지 않습니다."],
+    },
+  ]);
+});
+
 test("marks a normalized model token match for confirmation", () => {
   expect(matchRecall({ productName: "아동용 카시트", modelName: "Ａ １２３ pro" }, candidates)).toEqual([
     {
@@ -65,6 +79,42 @@ test("keeps multiple model candidates ambiguous", () => {
         "모델명 토큰이 공식 리콜 모델명에 포함됩니다.",
         "공식 리콜 후보가 여러 건이라 추가 확인이 필요합니다.",
       ],
+    },
+  ]);
+});
+
+test("does not create a recall candidate from a one-character model token", () => {
+  expect(matchRecall({ modelName: "A" }, candidates)).toEqual([
+    {
+      level: "no_match",
+      reasons: ["공식 데이터에서 일치 항목을 찾지 못함. 이는 제품의 안전을 보장하지 않습니다."],
+    },
+  ]);
+});
+
+test("does not create a recall candidate from a generic English product token", () => {
+  const genericCandidate: RecallRecord = { ...candidates[0], productName: "Pro 카시트" };
+
+  expect(matchRecall({ productName: "Pro" }, [genericCandidate])).toEqual([
+    {
+      level: "no_match",
+      reasons: ["공식 데이터에서 일치 항목을 찾지 못함. 이는 제품의 안전을 보장하지 않습니다."],
+    },
+  ]);
+});
+
+test("matches an A-123 style model by its letter-number identifier combination", () => {
+  const sameNumberDifferentPrefix: RecallRecord = {
+    ...candidates[0],
+    id: "recall-2",
+    modelName: "B-123 Pro",
+  };
+
+  expect(matchRecall({ modelName: "A-123" }, [candidates[0], sameNumberDifferentPrefix])).toEqual([
+    {
+      level: "needs_confirmation",
+      candidate: candidates[0],
+      reasons: ["모델명 토큰이 공식 리콜 모델명에 포함됩니다."],
     },
   ]);
 });

@@ -76,6 +76,7 @@ export class SafetyKoreaApi {
       this.availability = "available";
       return data;
     } catch (error) {
+      this.availability = "unavailable";
       if (controller.signal.aborted || isAbortError(error)) {
         throw new SafetyKoreaApiError("timeout", "제품안전정보센터 조회 시간이 초과되었습니다.");
       }

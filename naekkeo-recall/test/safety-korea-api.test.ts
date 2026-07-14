@@ -110,14 +110,64 @@ test("rejects malformed successful official responses", async () => {
 });
 
 test("converts an aborted request to an explicit timeout error", async () => {
-  const fetch = vi.fn((_: string, init?: RequestInit) => new Promise<Response>((_, reject) => {
-    init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
-  }));
+  const fetch = vi.fn()
+    .mockResolvedValueOnce(jsonResponse(await fixture("recall-list.json")))
+    .mockImplementationOnce((_: string, init?: RequestInit) => new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+    }));
   const api = new SafetyKoreaApi({ serviceId: "service-id", fetch, timeoutMs: 1 });
 
+  await api.searchRecalls({ productName: "카시트" });
+  expect(api.availability).toBe("available");
   await expect(api.searchCertifications({ modelName: "A-123" })).rejects.toEqual(
     new SafetyKoreaApiError("timeout", "제품안전정보센터 조회 시간이 초과되었습니다."),
   );
+  expect(api.availability).toBe("unavailable");
+});
+
+test("keeps official data available for a successful no-data result", async () => {
+  const fetch = vi.fn()
+    .mockResolvedValueOnce(jsonResponse(await fixture("recall-list.json")))
+    .mockResolvedValueOnce(jsonResponse({ resultCode: "2004", resultMsg: "No data", resultData: [] }));
+  const api = new SafetyKoreaApi({ serviceId: "service-id", fetch });
+
+  await api.searchRecalls({ productName: "카시트" });
+  await expect(api.searchRecalls({ productName: "없는 제품" })).resolves.toEqual([]);
+
+  expect(api.availability).toBe("available");
+});
+
+test.each(["4000", "4001", "4005", "5000"])("marks official data unavailable after provider failure code %s", async (resultCode) => {
+  const fetch = vi.fn()
+    .mockResolvedValueOnce(jsonResponse(await fixture("recall-list.json")))
+    .mockResolvedValueOnce(jsonResponse({ resultCode, resultMsg: "Failure" }));
+  const api = new SafetyKoreaApi({ serviceId: "service-id", fetch });
+
+  await api.searchRecalls({ productName: "카시트" });
+  await expect(api.searchRecalls({ productName: "없는 제품" })).rejects.toMatchObject({
+    name: "SafetyKoreaApiError",
+    code: "upstream_error",
+  });
+
+  expect(api.availability).toBe("unavailable");
+});
+
+test.each([
+  ["HTTP error", async () => new Response(null, { status: 503 })],
+  ["network error", async () => { throw new TypeError("network failed"); }],
+] as const)("marks official data unavailable after a %s", async (_name, failedResponse) => {
+  const fetch = vi.fn()
+    .mockResolvedValueOnce(jsonResponse(await fixture("recall-list.json")))
+    .mockImplementationOnce(failedResponse);
+  const api = new SafetyKoreaApi({ serviceId: "service-id", fetch });
+
+  await api.searchRecalls({ productName: "카시트" });
+  await expect(api.searchRecalls({ productName: "없는 제품" })).rejects.toMatchObject({
+    name: "SafetyKoreaApiError",
+    code: "upstream_error",
+  });
+
+  expect(api.availability).toBe("unavailable");
 });
 
 test("reports unavailable official data without a service ID", async () => {
