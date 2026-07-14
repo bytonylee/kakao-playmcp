@@ -1,0 +1,11 @@
+.git
+.worktrees
+**/node_modules
+**/dist
+**/coverage
+**/.env
+**/.env.*
+**/*.log
+**/*.pem
+**/*.key
+**/.DS_Store
