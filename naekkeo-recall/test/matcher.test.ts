@@ -25,7 +25,26 @@ test("confirms an exact certification-number match", () => {
   ]);
 });
 
-test.each(["공급자적합성", "CB1"])("does not confirm a non-certification description or short value (%s)", (certificationNumber) => {
+test.each([
+  ["ＭＳＩＰ－ＲＥＭ－ＴＳＤ－ＭＱ０４ＡＢＤ２００", "MSIP-REM-TSD-MQ04ABD200"],
+  ["kcc-rem-sdb-rv-300hd", "KCC-REM-SDB-RV-300HD"],
+  ["r-r-nid-plasmak", "R-R-Nid-PlasmaK"],
+])("confirms an exact legacy or radio certification-number match (%s)", (certificationNumber, candidateCertificationNumber) => {
+  const certifiedCandidate: RecallRecord = {
+    ...candidates[0],
+    certificationNumbers: [candidateCertificationNumber],
+  };
+
+  expect(matchRecall({ certificationNumber }, [certifiedCandidate])).toEqual([
+    {
+      level: "confirmed",
+      candidate: certifiedCandidate,
+      reasons: ["인증번호가 공식 리콜 정보와 정확히 일치합니다."],
+    },
+  ]);
+});
+
+test.each(["공급자적합성", "CB1", "CB 123A123-1234"])("does not confirm a description, short value, or spaced identifier (%s)", (certificationNumber) => {
   const describedCandidate: RecallRecord = {
     ...candidates[0],
     certificationNumbers: [certificationNumber],

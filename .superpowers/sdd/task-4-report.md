@@ -70,3 +70,19 @@ Fixtures follow the published SafetyKorea Open API interface design v2.0, but a 
 - Model and product matching only uses identifiers: two or more digits, two or more Hangul syllables, non-generic English tokens of at least three characters, mixed letter-number identifiers, or a one-letter-plus-number combination such as `A-123`. Standalone one-character tokens and generic descriptors such as `Pro` do not create candidates.
 - A parsed `2004` no-data result remains official data that is `available`. Every failed upstream request, including provider error codes, HTTP/network errors, malformed responses, and timeouts, changes availability to `unavailable` before returning the error so stale availability is not exposed.
 - Added coverage for `2004`, `4000`, `4001`, `4005`, `5000`, success-then-failure availability changes, `공급자적합성`, short cert values, standalone one-character tokens, generic `Pro`, and the valid `A-123` model combination.
+
+## P1 Certification Format Remediation
+
+### Red
+
+`cd naekkeo-recall && npm test -- test/matcher.test.ts` exited 1 with four expected failures. `MSIP-REM-TSD-MQ04ABD200`, `KCC-REM-SDB-RV-300HD`, and `R-R-Nid-PlasmaK` did not confirm, while a spaced `CB 123A123-1234` value incorrectly confirmed.
+
+### Green
+
+The focused matcher suite passed with 14 tests after the format change. `git diff --check` also passed.
+
+The complete `naekkeo-recall` test run and typecheck were attempted but remain blocked by pre-existing untracked tests that import absent `src/actions.ts`, `src/http.ts`, and `src/mcp.ts`: the full run has 3 passing files / 33 passing tests plus those 3 import failures, and `tsc --noEmit` reports the same missing modules. No files outside this P1 scope were changed.
+
+### Format Rule
+
+After NFKC and ASCII case normalization, an identifier must be 11-50 ASCII letters, digits, or hyphens; contain at least one hyphen; and either contain a digit or use at least three hyphen-separated segments. Spaces and non-ASCII text are not removed and therefore cannot confirm. This preserves exact matches for the existing `CB123A123-1234` form, digit-bearing legacy forms, and the all-letter multi-segment radio form while excluding descriptions and short values.

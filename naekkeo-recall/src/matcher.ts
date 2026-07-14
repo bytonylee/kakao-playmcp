@@ -19,8 +19,7 @@ const GENERIC_ENGLISH_TOKENS = new Set([
   "standard",
   "ultra",
 ]);
-const KC_CERTIFICATION_PATTERN = /^(?=.{11,40}$)(?=.*\d)[A-Z]{1,4}\d[A-Z0-9]{2,}-[A-Z0-9]{3,}$/;
-const KC_RADIO_CERTIFICATION_PATTERN = /^(?=.{12,50}$)(?=.*\d)R-[A-Z]-[A-Z0-9]{2,12}(?:-[A-Z0-9]{2,20})+$/;
+const KC_CERTIFICATION_PATTERN = /^(?=.{11,50}$)(?=.*-)(?:(?=.*\d)|(?=(?:[A-Z0-9]+-){3}))[A-Z0-9]+(?:-[A-Z0-9]+)+$/;
 
 export function matchRecall(product: ProductInput, candidates: readonly RecallRecord[]): RecallMatch[] {
   const matches = candidates.flatMap((candidate) => {
@@ -112,9 +111,9 @@ function isSingleAsciiLetter(token: string | undefined): boolean {
 
 function isValidKcCertificationNumber(value: string): boolean {
   const normalized = normalizeCertificationNumber(value);
-  return KC_CERTIFICATION_PATTERN.test(normalized) || KC_RADIO_CERTIFICATION_PATTERN.test(normalized);
+  return KC_CERTIFICATION_PATTERN.test(normalized);
 }
 
 function normalizeCertificationNumber(value: string): string {
-  return value.normalize("NFKC").toLocaleUpperCase("en-US").replace(/\s+/g, "");
+  return value.normalize("NFKC").toLocaleUpperCase("en-US");
 }
