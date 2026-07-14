@@ -5,11 +5,12 @@ import { MinwonApi } from "./minwon-api.js";
 
 const { env } = process;
 const config = loadConfig(env);
-const api = new MinwonApi({
-  serviceKey: config.credentials.dataGoKrServiceKey,
-  timeoutMs: config.upstreamTimeoutMs,
-});
 
 createHttpApp({
-  createServer: () => createMcpServer({ api }),
+  createServer: () => createMcpServer({
+    api: new MinwonApi({
+      serviceKey: config.credentials.dataGoKrServiceKey,
+      timeoutMs: config.upstreamTimeoutMs,
+    }),
+  }),
 }).listen(config.port);

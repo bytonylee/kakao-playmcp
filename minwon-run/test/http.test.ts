@@ -1,7 +1,8 @@
 import request from "supertest";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 
 import { createHttpApp } from "../src/http.js";
+import { createMcpServer } from "../src/mcp.js";
 
 test("responds to the health check", async () => {
   const response = await request(createHttpApp()).get("/healthz");
@@ -12,6 +13,36 @@ test("responds to the health check", async () => {
 
 test.each(["get", "delete", "put"] as const)("rejects %s requests to the MCP route", async (method) => {
   const response = await request(createHttpApp())[method]("/mcp");
+
+  expect(response.status).toBe(405);
+  expect(response.headers.allow).toBe("POST");
+  expect(response.body).toMatchObject({
+    jsonrpc: "2.0",
+    error: { message: "Method not allowed" },
+    id: null,
+  });
+});
+
+test("rejects a PUT with malformed JSON before invoking the body parser", async () => {
+  const response = await request(createHttpApp())
+    .put("/mcp")
+    .set("content-type", "application/json")
+    .send("{");
+
+  expect(response.status).toBe(405);
+  expect(response.headers.allow).toBe("POST");
+  expect(response.body).toMatchObject({
+    jsonrpc: "2.0",
+    error: { message: "Method not allowed" },
+    id: null,
+  });
+});
+
+test("rejects an oversized DELETE before invoking the body parser", async () => {
+  const response = await request(createHttpApp())
+    .delete("/mcp")
+    .set("content-type", "application/json")
+    .send(Buffer.alloc(64 * 1024 + 1, " "));
 
   expect(response.status).toBe(405);
   expect(response.headers.allow).toBe("POST");
@@ -89,4 +120,24 @@ test("serves an MCP initialize response without assigning a session", async () =
       serverInfo: { name: "minwon-run" },
     },
   });
+});
+
+test("creates a fresh MCP server for every request", async () => {
+  const createServer = vi.fn(createMcpServer);
+  const app = createHttpApp({ createServer });
+  const initialize = {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "test-client", version: "1.0.0" },
+    },
+  };
+
+  await request(app).post("/mcp").set("content-type", "application/json").send(initialize);
+  await request(app).post("/mcp").set("content-type", "application/json").send(initialize);
+
+  expect(createServer).toHaveBeenCalledTimes(2);
 });

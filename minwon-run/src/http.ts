@@ -41,34 +41,36 @@ export function createHttpApp(options: HttpAppOptions = {}) {
     res.status(200).json({ status: "ok" });
   });
 
-  app.use("/mcp", express.json({ limit: "64kb", type: "application/json" }));
-
-  app.post("/mcp", async (req, res) => {
-    if (!req.is("application/json")) {
-      jsonRpcError(res, 415, "Content-Type must be application/json");
-      return;
-    }
-
-    ensureMcpAccept(req);
-    res.locals.tool = toolName(req);
-    const server = createServer();
-    const transport = new StreamableHTTPServerTransport({
-      sessionIdGenerator: undefined,
-      enableJsonResponse: true,
-    });
-
-    try {
-      await server.connect(transport);
-      await transport.handleRequest(req, res, req.body);
-    } catch {
-      if (!res.headersSent) {
-        jsonRpcError(res, 500, "Internal server error");
+  app.post(
+    "/mcp",
+    express.json({ limit: "64kb", type: "application/json" }),
+    async (req, res) => {
+      if (!req.is("application/json")) {
+        jsonRpcError(res, 415, "Content-Type must be application/json");
+        return;
       }
-    } finally {
-      await transport.close();
-      await server.close();
-    }
-  });
+
+      ensureMcpAccept(req);
+      res.locals.tool = toolName(req);
+      const server = createServer();
+      const transport = new StreamableHTTPServerTransport({
+        sessionIdGenerator: undefined,
+        enableJsonResponse: true,
+      });
+
+      try {
+        await server.connect(transport);
+        await transport.handleRequest(req, res, req.body);
+      } catch {
+        if (!res.headersSent) {
+          jsonRpcError(res, 500, "Internal server error");
+        }
+      } finally {
+        await transport.close();
+        await server.close();
+      }
+    },
+  );
 
   app.all("/mcp", (_req, res) => {
     res.set("Allow", "POST");

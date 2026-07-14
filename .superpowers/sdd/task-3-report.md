@@ -43,3 +43,10 @@ tsc --noEmit passed
 
 - No live service key was used during this task; upstream behavior remains covered by existing adapter fixtures rather than a production-key call.
 - The API does not provide a per-office supported-service list in the verified response shape, so the server intentionally reports that condition as unconfirmed rather than attempting a service-specific conclusion.
+
+## P1 Follow-up Fixes
+
+- Moved the JSON body parser onto `POST /mcp` itself, so every non-POST request is rejected with `405` and `Allow: POST` before malformed or oversized bodies can be parsed.
+- Added regressions for malformed `PUT` JSON and a `DELETE` body larger than 64KB; both now return `405`.
+- Moved `MinwonApi` construction into the `createServer` closure in `index.ts`, preserving the loaded config values while giving each MCP request its own API and MCP server instance.
+- Added a factory-call regression that verifies two MCP requests create two servers.
