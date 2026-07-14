@@ -1,0 +1,20 @@
+{
+  "response": {
+    "header": { "resultCode": "00" },
+    "body": {
+      "items": {
+        "item": {
+          "csoId": "1168051000-001",
+          "csoNm": "강남구청 민원실",
+          "addr": "서울특별시 강남구 학동로 426",
+          "stdgCd": "1168051000",
+          "workList": "주민등록표 등본,여권",
+          "weekdayStartTime": "09:00",
+          "weekdayEndTime": "18:00",
+          "latitude": "37.5172",
+          "longitude": "127.0473"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "response": {
+    "header": { "resultCode": "00" },
+    "body": {
+      "items": {
+        "item": [
+          {
+            "csoId": "1168051000-001",
+            "waitCnt": "4",
+            "updatedAt": "2026-07-14T10:00:00+09:00"
+          },
+          {
+            "csoId": "1168051000-002",
+            "waitCnt": "12",
+            "updatedAt": "2026-07-14T10:00:00+09:00"
+          }
+        ]
+      }
+    }
+  }
+}
