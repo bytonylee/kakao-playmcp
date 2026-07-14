@@ -25,6 +25,8 @@ test("normalizes a single office item and sends only documented query parameters
       id: "1168051000-001",
       name: "강남구청 민원실",
       address: "서울특별시 강남구 학동로 426",
+      roadAddress: "서울특별시 강남구 학동로 426",
+      lotNumberAddress: "서울특별시 강남구 삼성동 16",
       stdgCd: "1168051000",
       serviceTypes: ["주민등록표 등본", "여권"],
       weekdayHours: { opensAt: "09:00", closesAt: "18:00" },
@@ -46,23 +48,78 @@ test("normalizes a single office item and sends only documented query parameters
   });
 });
 
-test("normalizes an array of wait items", async () => {
+test("normalizes official wait fields, aggregates counters, and retains the newest observation", async () => {
   const fetch = vi.fn(async (_input: string) => jsonResponse(await fixture("minwon-wait.json")));
   const api = new MinwonApi({ serviceKey: "secret-key", fetch });
 
   await expect(api.listWaits()).resolves.toEqual([
     {
       officeId: "1168051000-001",
-      waitingCount: 4,
-      updatedAt: "2026-07-14T10:00:00+09:00",
-    },
-    {
-      officeId: "1168051000-002",
-      waitingCount: 12,
-      updatedAt: "2026-07-14T10:00:00+09:00",
+      waitingCount: 7,
+      updatedAt: "20260714100500",
     },
   ]);
   expect(api.liveDataAvailable).toBe(true);
+});
+
+test("follows totalCount pagination without a region filter and does not retain duplicated offices", async () => {
+  const pages = [
+    {
+      response: {
+        header: { resultCode: "00" },
+        body: {
+          totalCount: "101",
+          items: { item: [{ csoSn: "1", csoNm: "첫째", roadNmAddr: "서울 1", lat: "37", lot: "127" }, { csoSn: "2", csoNm: "둘째", lotnoAddr: "서울 2" }] },
+        },
+      },
+    },
+    {
+      response: {
+        header: { resultCode: "00" },
+        body: {
+          totalCount: "101",
+          items: { item: [{ csoSn: "2", csoNm: "둘째", lotnoAddr: "서울 2" }, { csoSn: "3", csoNm: "셋째", roadNmAddr: "서울 3" }] },
+        },
+      },
+    },
+  ];
+  const fetch = vi.fn(async (_input: string) => jsonResponse(pages[fetch.mock.calls.length - 1]));
+  const api = new MinwonApi({ serviceKey: "secret-key", fetch });
+
+  await expect(api.listOffices()).resolves.toMatchObject([{ id: "1" }, { id: "2" }, { id: "3" }]);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(new URL(fetch.mock.calls[0][0] as string).searchParams.has("stdgCd")).toBe(false);
+  expect(new URL(fetch.mock.calls[1][0] as string).searchParams.get("pageNo")).toBe("2");
+});
+
+test("treats K03 and empty items as current no-data and clears previously available live data", async () => {
+  const fetch = vi.fn()
+    .mockResolvedValueOnce(jsonResponse(await fixture("minwon-wait.json")))
+    .mockResolvedValueOnce(jsonResponse(await fixture("minwon-wait-k03.json")))
+    .mockResolvedValueOnce(jsonResponse({ response: { header: { resultCode: "00" }, body: { totalCount: "0", items: { item: [] } } } }))
+    .mockRejectedValueOnce(new Error("network unavailable"));
+  const api = new MinwonApi({ serviceKey: "secret-key", fetch });
+
+  await api.listWaits();
+  expect(api.liveDataAvailable).toBe(true);
+  await expect(api.listWaits()).resolves.toEqual([]);
+  expect(api.liveDataAvailable).toBe(false);
+  await expect(api.listWaits()).resolves.toEqual([]);
+  expect(api.liveDataAvailable).toBe(false);
+  await expect(api.listWaits()).rejects.toMatchObject({ code: "upstream_error" });
+  expect(api.liveDataAvailable).toBe(false);
+});
+
+test("rejects invalid HHMMSS weekday hours instead of guessing whether an office is open", async () => {
+  const fetch = vi.fn(async () => jsonResponse({
+    response: {
+      header: { resultCode: "00" },
+      body: { totalCount: "1", items: { item: { csoSn: "1", csoNm: "민원실", roadNmAddr: "서울", wkdyOperBgngTm: "246000", wkdyOperEndTm: "180000" } } },
+    },
+  }));
+  const api = new MinwonApi({ serviceKey: "secret-key", fetch });
+
+  await expect(api.listOffices()).rejects.toMatchObject({ code: "invalid_response" });
 });
 
 test("rejects malformed successful API responses", async () => {

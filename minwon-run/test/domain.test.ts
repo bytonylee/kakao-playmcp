@@ -81,18 +81,20 @@ test("uses a deterministic fallback order when live waits are unavailable", () =
   expect(ranked.every((office) => office.liveDataAvailable === false)).toBe(true);
 });
 
-test.each([
-  ["주민등록표 등본", true, "400원"],
-  ["인감증명", false, "600원"],
-  ["전입신고", true, "무료"],
-  ["여권", false, "53,000원"],
-  ["가족관계증명서", true, "1,000원"],
-] as const)("returns the supported %s checklist", (serviceType, onlineAvailable, fee) => {
-  expect(getChecklist(serviceType)).toMatchObject({
+test.each(["주민등록표 등본", "인감증명", "전입신고", "여권", "가족관계증명서"])("returns a conditional %s checklist with official routes", (serviceType) => {
+  const checklist = getChecklist(serviceType);
+
+  expect(checklist).toMatchObject({
     serviceType,
-    onlineAvailable,
-    fee,
+    visit: { availability: "available" },
+    online: { availability: "conditional" },
+    officialGuidance: {
+      sourceUrl: expect.stringMatching(/^https:\/\/www\.gov\.kr\//),
+      checkedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
+      notice: "신청 전 최신 공식 안내를 확인하세요.",
+    },
   });
+  expect(checklist.fee.summary).toContain("확인");
 });
 
 test("rejects an unsupported checklist service", () => {

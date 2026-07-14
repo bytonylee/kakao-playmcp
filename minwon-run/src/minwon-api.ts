@@ -3,8 +3,16 @@ import type { CivilOffice, WaitStatus } from "./domain.js";
 const API_BASE_URL = "https://apis.data.go.kr/B551982/cso_v2/";
 const OFFICE_PATH = "cso_info_v2";
 const WAIT_PATH = "cso_realtime_v2";
+const PAGE_SIZE = 100;
+const MAX_PAGES = 100;
 
 type FetchFunction = (input: string, init?: RequestInit) => Promise<Response>;
+type Item = Record<string, unknown>;
+
+interface ApiPage {
+  readonly items: Item[];
+  readonly totalCount?: number;
+}
 
 export interface MinwonApiOptions {
   readonly serviceKey?: string;
@@ -36,31 +44,55 @@ export class MinwonApi {
   }
 
   async listOffices(stdgCd?: string): Promise<CivilOffice[]> {
-    const items = await this.request(OFFICE_PATH, stdgCd);
-    return items.map(toCivilOffice);
+    const offices = new Map<string, CivilOffice>();
+    for (const item of await this.request(OFFICE_PATH, stdgCd)) {
+      const office = toCivilOffice(item);
+      if (!offices.has(office.id)) {
+        offices.set(office.id, office);
+      }
+    }
+    return [...offices.values()];
   }
 
   async listWaits(stdgCd?: string): Promise<WaitStatus[]> {
+    this.liveDataAvailable = false;
     if (!this.serviceKey) {
-      this.liveDataAvailable = false;
       return [];
     }
 
-    const waits = (await this.request(WAIT_PATH, stdgCd)).map(toWaitStatus);
+    const waits = aggregateWaits(await this.request(WAIT_PATH, stdgCd));
     this.liveDataAvailable = waits.length > 0;
     return waits;
   }
 
-  private async request(path: string, stdgCd?: string): Promise<Record<string, unknown>[]> {
+  private async request(path: string, stdgCd?: string): Promise<Item[]> {
     if (!this.serviceKey) {
       return [];
     }
 
+    const firstPage = await this.requestPage(path, 1, stdgCd);
+    const items = [...firstPage.items];
+    const expectedPages = firstPage.totalCount === undefined
+      ? MAX_PAGES
+      : Math.min(Math.ceil(firstPage.totalCount / PAGE_SIZE), MAX_PAGES);
+
+    for (let pageNo = 2; pageNo <= expectedPages && items.length > 0; pageNo += 1) {
+      const page = await this.requestPage(path, pageNo, stdgCd);
+      items.push(...page.items);
+      if (page.items.length === 0) {
+        break;
+      }
+    }
+
+    return items;
+  }
+
+  private async requestPage(path: string, pageNo: number, stdgCd?: string): Promise<ApiPage> {
     const url = new URL(path, API_BASE_URL);
     url.search = new URLSearchParams({
-      serviceKey: this.serviceKey,
-      pageNo: "1",
-      numOfRows: "100",
+      serviceKey: this.serviceKey!,
+      pageNo: String(pageNo),
+      numOfRows: String(PAGE_SIZE),
       type: "JSON",
       ...(stdgCd ? { stdgCd } : {}),
     }).toString();
@@ -73,7 +105,7 @@ export class MinwonApi {
       if (!response.ok) {
         throw new MinwonApiError("upstream_error", "민원실 정보를 불러오지 못했습니다.");
       }
-      return parseItems(await response.json());
+      return parsePage(await response.json());
     } catch (error) {
       if (controller.signal.aborted || isAbortError(error)) {
         throw new MinwonApiError("timeout", "민원실 실시간 정보 조회 시간이 초과되었습니다.");
@@ -88,37 +120,48 @@ export class MinwonApi {
   }
 }
 
-function parseItems(payload: unknown): Record<string, unknown>[] {
+function parsePage(payload: unknown): ApiPage {
   if (!isRecord(payload)) {
     throw invalidResponse();
   }
 
   const response = isRecord(payload.response) ? payload.response : payload;
   const header = isRecord(response.header) ? response.header : undefined;
-  const resultCode = header?.resultCode ?? header?.resultcode;
+  const resultCode = optionalString(header, ["resultCode", "resultcode"]);
+  if (resultCode === "K03") {
+    return { items: [], totalCount: 0 };
+  }
   if (resultCode !== undefined && resultCode !== "00") {
     throw new MinwonApiError("upstream_error", "민원실 정보를 불러오지 못했습니다.");
   }
 
   const body = isRecord(response.body) ? response.body : undefined;
-  const items = body && isRecord(body.items) ? body.items.item : undefined;
-  if (items === undefined) {
+  if (!body) {
     throw invalidResponse();
   }
-  if (Array.isArray(items)) {
-    return items.map(asRecord);
+  const totalCount = optionalCount(body.totalCount);
+  const rawItems = isRecord(body.items) ? body.items.item : undefined;
+  if (rawItems === undefined || rawItems === null || rawItems === "") {
+    if (totalCount === undefined || totalCount === 0) {
+      return { items: [], totalCount };
+    }
+    throw invalidResponse();
   }
-  return [asRecord(items)];
+  if (Array.isArray(rawItems)) {
+    return { items: rawItems.map(asRecord), totalCount };
+  }
+  return { items: [asRecord(rawItems)], totalCount };
 }
 
-function toCivilOffice(item: Record<string, unknown>): CivilOffice {
-  const id = requiredString(item, ["csoId", "csoid", "CSO_ID", "id"]);
-  const name = requiredString(item, ["csoNm", "csoName", "CSO_NM", "name"]);
-  const address = requiredString(item, ["addr", "address", "adres", "ADDR"]);
-  const opensAt = optionalString(item, ["weekdayStartTime", "openTime", "WKDAY_BGN_TIME"]);
-  const closesAt = optionalString(item, ["weekdayEndTime", "closeTime", "WKDAY_END_TIME"]);
-  const latitude = optionalNumber(item, ["latitude", "lat", "LAT"]);
-  const longitude = optionalNumber(item, ["longitude", "lng", "lon", "LON"]);
+function toCivilOffice(item: Item): CivilOffice {
+  const roadAddress = optionalString(item, ["roadNmAddr"]);
+  const lotNumberAddress = optionalString(item, ["lotnoAddr"]);
+  const address = roadAddress ?? lotNumberAddress;
+  const stdgCd = optionalString(item, ["stdgCd"]);
+  const opensAt = normalizeOperatingTime(optionalString(item, ["wkdyOperBgngTm"]));
+  const closesAt = normalizeOperatingTime(optionalString(item, ["wkdyOperEndTm"]));
+  const latitude = optionalNumber(item, ["lat"]);
+  const longitude = optionalNumber(item, ["lot"]);
 
   if ((opensAt === undefined) !== (closesAt === undefined)) {
     throw invalidResponse();
@@ -126,29 +169,82 @@ function toCivilOffice(item: Record<string, unknown>): CivilOffice {
   if ((latitude === undefined) !== (longitude === undefined)) {
     throw invalidResponse();
   }
+  if (!address) {
+    throw invalidResponse();
+  }
 
   return {
-    id,
-    name,
+    id: requiredString(item, ["csoSn"]),
+    name: requiredString(item, ["csoNm"]),
     address,
-    ...(optionalString(item, ["stdgCd", "stdgcd", "STDG_CD"]) ? { stdgCd: optionalString(item, ["stdgCd", "stdgcd", "STDG_CD"]) } : {}),
-    serviceTypes: splitServices(item.workList ?? item.serviceTypes ?? item.serviceList),
+    ...(roadAddress ? { roadAddress } : {}),
+    ...(lotNumberAddress ? { lotNumberAddress } : {}),
+    ...(stdgCd ? { stdgCd } : {}),
+    serviceTypes: splitServices(item.workList),
     ...(opensAt && closesAt ? { weekdayHours: { opensAt, closesAt } } : {}),
     ...(latitude !== undefined && longitude !== undefined ? { latitude, longitude } : {}),
   };
 }
 
-function toWaitStatus(item: Record<string, unknown>): WaitStatus {
-  const waitingCount = optionalNumber(item, ["waitCnt", "waitCount", "waitingCount", "WAIT_CNT"]);
-  if (waitingCount === undefined || waitingCount < 0 || !Number.isInteger(waitingCount)) {
-    throw invalidResponse();
+function aggregateWaits(items: readonly Item[]): WaitStatus[] {
+  const seenRecords = new Set<string>();
+  const waitsByOffice = new Map<string, WaitStatus>();
+
+  for (const item of items) {
+    const recordKey = stableRecordKey(item);
+    if (seenRecords.has(recordKey)) {
+      continue;
+    }
+    seenRecords.add(recordKey);
+
+    const wait = toWaitStatus(item);
+    if (!wait) {
+      continue;
+    }
+    const previous = waitsByOffice.get(wait.officeId);
+    if (!previous) {
+      waitsByOffice.set(wait.officeId, wait);
+      continue;
+    }
+
+    const waitingCount = previous.waitingCount + wait.waitingCount;
+    if (!Number.isSafeInteger(waitingCount)) {
+      continue;
+    }
+    waitsByOffice.set(wait.officeId, {
+      officeId: wait.officeId,
+      waitingCount,
+      ...(newerTimestamp(wait.updatedAt, previous.updatedAt) ? { updatedAt: wait.updatedAt } : previous.updatedAt ? { updatedAt: previous.updatedAt } : {}),
+    });
   }
 
-  return {
-    officeId: requiredString(item, ["csoId", "csoid", "CSO_ID", "officeId"]),
-    waitingCount,
-    ...(optionalString(item, ["updatedAt", "updateTime", "regDt", "UPDT_DT"]) ? { updatedAt: optionalString(item, ["updatedAt", "updateTime", "regDt", "UPDT_DT"]) } : {}),
-  };
+  return [...waitsByOffice.values()].sort((left, right) => left.officeId.localeCompare(right.officeId, "ko"));
+}
+
+function toWaitStatus(item: Item): WaitStatus | undefined {
+  const officeId = optionalString(item, ["csoSn"]);
+  const waitingCount = optionalNumber(item, ["wtngCnt"]);
+  if (!officeId || waitingCount === undefined || !Number.isSafeInteger(waitingCount) || waitingCount < 0) {
+    return undefined;
+  }
+
+  const updatedAt = optionalString(item, ["totDt"]);
+  return { officeId, waitingCount, ...(updatedAt ? { updatedAt } : {}) };
+}
+
+function normalizeOperatingTime(value: string | undefined): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const match = /^(\d{2})(\d{2})(\d{2})$/.exec(value);
+  if (!match) {
+    throw invalidResponse();
+  }
+  const [hours, minutes, seconds] = match.slice(1).map(Number);
+  if (hours > 23 || minutes > 59 || seconds > 59) {
+    throw invalidResponse();
+  }
+  return `${match[1]}:${match[2]}`;
 }
 
 function splitServices(value: unknown): string[] {
@@ -161,7 +257,32 @@ function splitServices(value: unknown): string[] {
   return [];
 }
 
-function requiredString(item: Record<string, unknown>, keys: readonly string[]): string {
+function newerTimestamp(candidate: string | undefined, current: string | undefined): boolean {
+  if (!candidate) {
+    return false;
+  }
+  if (!current) {
+    return true;
+  }
+  return candidate > current;
+}
+
+function stableRecordKey(item: Item): string {
+  return JSON.stringify(Object.fromEntries(Object.entries(item).sort(([left], [right]) => left.localeCompare(right))));
+}
+
+function optionalCount(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  const count = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  if (!Number.isSafeInteger(count) || count < 0) {
+    throw invalidResponse();
+  }
+  return count;
+}
+
+function requiredString(item: Item, keys: readonly string[]): string {
   const value = optionalString(item, keys);
   if (!value) {
     throw invalidResponse();
@@ -169,7 +290,10 @@ function requiredString(item: Record<string, unknown>, keys: readonly string[]):
   return value;
 }
 
-function optionalString(item: Record<string, unknown>, keys: readonly string[]): string | undefined {
+function optionalString(item: Item | undefined, keys: readonly string[]): string | undefined {
+  if (!item) {
+    return undefined;
+  }
   for (const key of keys) {
     const value = item[key];
     if (typeof value === "string" && value.trim() !== "") {
@@ -179,10 +303,10 @@ function optionalString(item: Record<string, unknown>, keys: readonly string[]):
   return undefined;
 }
 
-function optionalNumber(item: Record<string, unknown>, keys: readonly string[]): number | undefined {
+function optionalNumber(item: Item, keys: readonly string[]): number | undefined {
   for (const key of keys) {
     const value = item[key];
-    const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+    const number = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
     if (Number.isFinite(number)) {
       return number;
     }
@@ -190,14 +314,14 @@ function optionalNumber(item: Record<string, unknown>, keys: readonly string[]):
   return undefined;
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
+function asRecord(value: unknown): Item {
   if (!isRecord(value)) {
     throw invalidResponse();
   }
   return value;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isRecord(value: unknown): value is Item {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 

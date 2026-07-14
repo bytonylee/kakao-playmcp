@@ -2,17 +2,34 @@
   "response": {
     "header": { "resultCode": "00" },
     "body": {
+      "totalCount": "4",
       "items": {
         "item": [
           {
-            "csoId": "1168051000-001",
-            "waitCnt": "4",
-            "updatedAt": "2026-07-14T10:00:00+09:00"
+            "csoSn": "1168051000-001",
+            "wtngCnt": "4",
+            "totDt": "20260714100000",
+            "bizNm": "주민등록",
+            "wndwNo": "1"
           },
           {
-            "csoId": "1168051000-002",
-            "waitCnt": "12",
-            "updatedAt": "2026-07-14T10:00:00+09:00"
+            "csoSn": "1168051000-001",
+            "wtngCnt": "3",
+            "totDt": "20260714100500",
+            "bizNm": "여권",
+            "wndwNo": "2"
+          },
+          {
+            "csoSn": "1168051000-001",
+            "wtngCnt": "3",
+            "totDt": "20260714100500",
+            "bizNm": "여권",
+            "wndwNo": "2"
+          },
+          {
+            "csoSn": "1168051000-002",
+            "wtngCnt": "-1",
+            "totDt": "20260714101000"
           }
         ]
       }
