@@ -11,12 +11,13 @@ interface Logger {
 
 export interface HttpAppOptions {
   readonly api?: RecallSafetyApi;
+  readonly createApi?: () => RecallSafetyApi;
   readonly logger?: Logger;
 }
 
 export function createHttpApp(options: HttpAppOptions = {}) {
   const app = express();
-  const api = options.api ?? new SafetyKoreaApi();
+  const createApi = options.createApi ?? (() => options.api ?? new SafetyKoreaApi());
 
   app.get("/healthz", (_request, response) => {
     response.status(200).json({ status: "ok" });
@@ -28,11 +29,15 @@ export function createHttpApp(options: HttpAppOptions = {}) {
         sessionIdGenerator: undefined,
         enableJsonResponse: true,
       });
-      const server = createMcpServer({ api });
-      await server.connect(transport);
-      await transport.handleRequest(request, response, request.body);
-      await server.close();
-      options.logger?.info({ event: "mcp_request", method: "POST", path: "/mcp", statusCode: response.statusCode });
+      const server = createMcpServer({ api: createApi() });
+      try {
+        await server.connect(transport);
+        await transport.handleRequest(request, response, request.body);
+        options.logger?.info({ event: "mcp_request", method: "POST", path: "/mcp", statusCode: response.statusCode });
+      } finally {
+        await transport.close();
+        await server.close();
+      }
     } catch (error) {
       next(error);
     }

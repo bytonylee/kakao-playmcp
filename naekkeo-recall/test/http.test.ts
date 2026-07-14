@@ -2,6 +2,7 @@ import request from "supertest";
 import { expect, test, vi } from "vitest";
 
 import { createHttpApp } from "../src/http.js";
+import { createRuntime } from "../src/index.js";
 
 test("responds to the health check even without a SafetyKorea service key", async () => {
   const response = await request(createHttpApp()).get("/healthz");
@@ -67,6 +68,37 @@ test("serves an MCP initialize response without assigning a session", async () =
   });
 });
 
+test("creates a fresh API for each MCP request", async () => {
+  const createApi = vi.fn(() => ({
+    availability: "unavailable" as const,
+    searchRecalls: vi.fn(),
+    searchCertifications: vi.fn(),
+  }));
+  const app = createHttpApp({ createApi });
+
+  await initialize(app);
+  await initialize(app);
+
+  expect(createApi).toHaveBeenCalledTimes(2);
+});
+
+test("creates a runtime with configured port and SafetyKorea API options", async () => {
+  const createApi = vi.fn(() => ({
+    availability: "unavailable" as const,
+    searchRecalls: vi.fn(),
+    searchCertifications: vi.fn(),
+  }));
+  const runtime = createRuntime({
+    env: { PORT: "8123", SAFETY_KOREA_SERVICE_ID: "runtime-service-id" },
+    createApi,
+  });
+
+  await initialize(runtime.app);
+
+  expect(runtime.port).toBe(8123);
+  expect(createApi).toHaveBeenCalledWith({ serviceId: "runtime-service-id", timeoutMs: 2_000 });
+});
+
 test("logs request metadata without logging a body, key, or product information", async () => {
   const info = vi.fn();
   const secret = "do-not-log-this-service-key";
@@ -84,3 +116,22 @@ test("logs request metadata without logging a body, key, or product information"
   expect(logs).not.toContain(productName);
   expect(logs).not.toContain("arguments");
 });
+
+async function initialize(app: ReturnType<typeof createHttpApp>) {
+  const response = await request(app)
+    .post("/mcp")
+    .set("content-type", "application/json")
+    .set("accept", "application/json, text/event-stream")
+    .send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "initialize",
+      params: {
+        protocolVersion: "2025-03-26",
+        capabilities: {},
+        clientInfo: { name: "test-client", version: "1.0.0" },
+      },
+    });
+
+  expect(response.status).toBe(200);
+}
