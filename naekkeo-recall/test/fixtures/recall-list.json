@@ -1,0 +1,23 @@
+{
+  "resultCode": "2000",
+  "resultMsg": "Success",
+  "resultData": [
+    {
+      "recallUid": "3802",
+      "recallProductName": "아동용 카시트",
+      "recallBrandName": "Safe Ride",
+      "recallModelName": "A-123 Pro, A-124 Pro",
+      "recallMeans": "교환",
+      "barcodeNum": "8801234567890",
+      "certNum": "CB123A123-1234",
+      "recallTypeName": "자발적리콜",
+      "recallInqryTel": "080-123-4567",
+      "recallCmpnyName": "세이프라이드코리아",
+      "makerName": "Safe Ride Co.",
+      "publishDate": "20260701",
+      "harmDscr": "고정 장치 결함",
+      "accidentCaseDscr": "사고 사례 없음",
+      "publishActionDscr": "사용을 중지하고 제조사에 문의"
+    }
+  ]
+}

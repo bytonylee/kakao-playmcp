@@ -1,0 +1,21 @@
+{
+  "resultCode": "2000",
+  "resultMsg": "Success",
+  "resultData": [
+    {
+      "certUid": 1231231,
+      "certNum": "CB123A123-1234",
+      "certState": "적합",
+      "certDiv": "어린이제품 특별법 대상>안전확인 대상",
+      "certDate": "20240115",
+      "firstCertNum": "CB123A123-1234",
+      "productName": "아동용 카시트",
+      "brandName": "Safe Ride",
+      "modelName": "A-123 Pro",
+      "categoryName": "어린이제품>카시트",
+      "makerName": "Safe Ride Co.",
+      "importerName": "세이프라이드코리아",
+      "signDate": "20240116"
+    }
+  ]
+}

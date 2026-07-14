@@ -1,0 +1,79 @@
+import { expect, test } from "vitest";
+
+import { matchRecall, normalizeProductText, type RecallRecord } from "../src/matcher.js";
+
+const candidates: RecallRecord[] = [
+  {
+    id: "recall-1",
+    productName: "아동용 카시트",
+    modelName: "A-123 Pro, A-124 Pro",
+    certificationNumbers: ["CB123A123-1234"],
+  },
+];
+
+test("normalizes Korean and ASCII text before comparison", () => {
+  expect(normalizeProductText("  아동용  Ａ-１２３  Pro  ")).toBe("아동용 a 123 pro");
+});
+
+test("confirms an exact certification-number match", () => {
+  expect(matchRecall({ certificationNumber: "cb123a123-1234" }, candidates)).toEqual([
+    {
+      level: "confirmed",
+      candidate: candidates[0],
+      reasons: ["인증번호가 공식 리콜 정보와 정확히 일치합니다."],
+    },
+  ]);
+});
+
+test("marks a normalized model token match for confirmation", () => {
+  expect(matchRecall({ productName: "아동용 카시트", modelName: "Ａ １２３ pro" }, candidates)).toEqual([
+    {
+      level: "needs_confirmation",
+      candidate: candidates[0],
+      reasons: [
+        "제품명 토큰이 공식 리콜 제품명에 포함됩니다.",
+        "모델명 토큰이 공식 리콜 모델명에 포함됩니다.",
+      ],
+    },
+  ]);
+});
+
+test("keeps multiple model candidates ambiguous", () => {
+  const ambiguousCandidates = [
+    candidates[0],
+    {
+      id: "recall-2",
+      productName: "아동용 카시트",
+      modelName: "A-123 Basic",
+      certificationNumbers: [],
+    },
+  ];
+
+  expect(matchRecall({ modelName: "A-123" }, ambiguousCandidates)).toEqual([
+    {
+      level: "needs_confirmation",
+      candidate: ambiguousCandidates[0],
+      reasons: [
+        "모델명 토큰이 공식 리콜 모델명에 포함됩니다.",
+        "공식 리콜 후보가 여러 건이라 추가 확인이 필요합니다.",
+      ],
+    },
+    {
+      level: "needs_confirmation",
+      candidate: ambiguousCandidates[1],
+      reasons: [
+        "모델명 토큰이 공식 리콜 모델명에 포함됩니다.",
+        "공식 리콜 후보가 여러 건이라 추가 확인이 필요합니다.",
+      ],
+    },
+  ]);
+});
+
+test("states that no match is not a safety guarantee", () => {
+  expect(matchRecall({ modelName: "Z-999" }, candidates)).toEqual([
+    {
+      level: "no_match",
+      reasons: ["공식 데이터에서 일치 항목을 찾지 못함. 이는 제품의 안전을 보장하지 않습니다."],
+    },
+  ]);
+});
