@@ -6,7 +6,6 @@ Last verified: 2026-07-15 (Asia/Seoul)
 
 - Public repository: `https://github.com/bytonylee/kakao-playmcp`
 - Deployment branch: `main`
-- Verified repository revision: `392e205`
 - Verified application-code revision: `e66498d`
 - Minwon Run Dockerfile: `minwon-run/Dockerfile`
 - My Recall Dockerfile: `naekkeo-recall/Dockerfile`
