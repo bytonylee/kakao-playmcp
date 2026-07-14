@@ -1,4 +1,4 @@
-import type { CivilOffice, WaitStatus } from "./domain.js";
+import type { CivilOffice, ConditionalOperatingSchedule, WaitStatus } from "./domain.js";
 
 const API_BASE_URL = "https://apis.data.go.kr/B551982/cso_v2/";
 const OFFICE_PATH = "cso_info_v2";
@@ -70,18 +70,15 @@ export class MinwonApi {
       return [];
     }
 
-    const firstPage = await this.requestPage(path, 1, stdgCd);
-    const items = [...firstPage.items];
-    const expectedPages = firstPage.totalCount === undefined
+    let page = await this.requestPage(path, 1, stdgCd);
+    const items = [...page.items];
+    const expectedPages = page.totalCount === undefined
       ? MAX_PAGES
-      : Math.min(Math.ceil(firstPage.totalCount / PAGE_SIZE), MAX_PAGES);
+      : Math.min(Math.ceil(page.totalCount / PAGE_SIZE), MAX_PAGES);
 
-    for (let pageNo = 2; pageNo <= expectedPages && items.length > 0; pageNo += 1) {
-      const page = await this.requestPage(path, pageNo, stdgCd);
+    for (let pageNo = 2; pageNo <= expectedPages && page.items.length === PAGE_SIZE; pageNo += 1) {
+      page = await this.requestPage(path, pageNo, stdgCd);
       items.push(...page.items);
-      if (page.items.length === 0) {
-        break;
-      }
     }
 
     return items;
@@ -160,6 +157,8 @@ function toCivilOffice(item: Item): CivilOffice {
   const stdgCd = optionalString(item, ["stdgCd"]);
   const opensAt = normalizeOperatingTime(optionalString(item, ["wkdyOperBgngTm"]));
   const closesAt = normalizeOperatingTime(optionalString(item, ["wkdyOperEndTm"]));
+  const night = toConditionalOperatingSchedule(item, "nghtOperYn", "nghtDowExpln");
+  const weekend = toConditionalOperatingSchedule(item, "wkndOperYn", "wkndDowExpln");
   const latitude = optionalNumber(item, ["lat"]);
   const longitude = optionalNumber(item, ["lot"]);
 
@@ -182,7 +181,31 @@ function toCivilOffice(item: Item): CivilOffice {
     ...(stdgCd ? { stdgCd } : {}),
     serviceTypes: splitServices(item.workList),
     ...(opensAt && closesAt ? { weekdayHours: { opensAt, closesAt } } : {}),
+    ...(opensAt || night || weekend ? {
+      operatingSchedule: {
+        ...(opensAt && closesAt ? { weekdayHours: { opensAt, closesAt } } : {}),
+        ...(night ? { night } : {}),
+        ...(weekend ? { weekend } : {}),
+      },
+    } : {}),
     ...(latitude !== undefined && longitude !== undefined ? { latitude, longitude } : {}),
+  };
+}
+
+function toConditionalOperatingSchedule(
+  item: Item,
+  availabilityKey: string,
+  explanationKey: string,
+): ConditionalOperatingSchedule | undefined {
+  const value = optionalString(item, [availabilityKey]);
+  if (value !== "Y" && value !== "N") {
+    return undefined;
+  }
+
+  const explanation = optionalString(item, [explanationKey]);
+  return {
+    availability: value === "Y" ? "operating" : "closed",
+    ...(explanation ? { explanation } : {}),
   };
 }
 

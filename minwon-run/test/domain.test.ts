@@ -9,7 +9,7 @@ const offices: CivilOffice[] = [
     name: "열린 민원실",
     address: "서울시 강남구",
     serviceTypes: ["주민등록표 등본"],
-    weekdayHours: { opensAt: "09:00", closesAt: "18:00" },
+    operatingSchedule: { weekdayHours: { opensAt: "09:00", closesAt: "18:00" } },
     latitude: 37.5,
     longitude: 127.0,
   },
@@ -18,7 +18,7 @@ const offices: CivilOffice[] = [
     name: "열린 대기 민원실",
     address: "서울시 강남구",
     serviceTypes: ["주민등록표 등본"],
-    weekdayHours: { opensAt: "09:00", closesAt: "18:00" },
+    operatingSchedule: { weekdayHours: { opensAt: "09:00", closesAt: "18:00" } },
     latitude: 37.51,
     longitude: 127.01,
   },
@@ -27,7 +27,7 @@ const offices: CivilOffice[] = [
     name: "닫힌 민원실",
     address: "서울시 강남구",
     serviceTypes: ["주민등록표 등본"],
-    weekdayHours: { opensAt: "08:00", closesAt: "10:00" },
+    operatingSchedule: { weekdayHours: { opensAt: "08:00", closesAt: "10:00" } },
   },
   {
     id: "other-service",
@@ -79,6 +79,28 @@ test("uses a deterministic fallback order when live waits are unavailable", () =
 
   expect(ranked.map((office) => office.id)).toEqual(["open-high-wait", "open-low-wait"]);
   expect(ranked.every((office) => office.liveDataAvailable === false)).toBe(true);
+});
+
+test("keeps a weekend-operating office unknown rather than marking it closed without a dated schedule", () => {
+  const ranked = rankOffices([
+    {
+      id: "weekend-office",
+      name: "주말 민원실",
+      address: "서울시 강남구",
+      serviceTypes: ["주민등록표 등본"],
+      operatingSchedule: {
+        weekend: {
+          availability: "operating",
+          explanation: "매월 첫번째 토요일 09:00 ~ 13:00 운영",
+        },
+      },
+    },
+  ], [], {
+    serviceType: "주민등록표 등본",
+    at: new Date("2026-07-18T10:30:00+09:00"),
+  });
+
+  expect(ranked[0]).toMatchObject({ isOpen: false, openState: "unknown" });
 });
 
 test.each(["주민등록표 등본", "인감증명", "전입신고", "여권", "가족관계증명서"])("returns a conditional %s checklist with official routes", (serviceType) => {

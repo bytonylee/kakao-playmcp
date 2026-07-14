@@ -113,3 +113,44 @@ Tests  8 passed (8)
 - K03 and empty items return current no-data. `liveDataAvailable` resets before every wait query, including upstream errors and timeouts, so it cannot remain stale after a previous success.
 - Requests use `totalCount` pagination, cap at 100 pages, stop on empty pages, and remove duplicate office records. Tests cover requests with and without `stdgCd`.
 - Checklists now expose `visit`, conditionally available `online`, a conditional fee summary, and `officialGuidance` (`sourceUrl`, `checkedAt`, and the required verification notice). Consumers must use these structured fields instead of the removed `onlineAvailable` boolean and `fee` string.
+
+## Re-review Remediation
+
+### Red
+
+Before changing the adapter or domain, the pagination and operating-schedule regressions were added and run with:
+
+```sh
+cd minwon-run && npm test -- test/domain.test.ts test/minwon-api.test.ts
+```
+
+The run exited 1: 5 of 19 tests failed. The no-`totalCount` partial-page regression made 100 requests instead of one; a partial second page with `totalCount: 300` requested a third page; and the fixture's official weekend fields were not represented in the domain. The Saturday case had no explicit unknown state and was therefore indistinguishable from a confirmed closure.
+
+### Green
+
+After the changes, the focused regression suite and typecheck passed:
+
+```sh
+cd minwon-run && npm test -- test/domain.test.ts test/minwon-api.test.ts && npm run typecheck
+```
+
+```text
+Test Files  2 passed (2)
+Tests  20 passed (20)
+tsc --noEmit: exit 0
+```
+
+### Changes
+
+- Pagination now requests a following page only when the immediately previous response contains exactly `PAGE_SIZE` items. This applies whether `totalCount` is present or absent; an empty or partial response ends pagination while the 100-page cap remains in force.
+- The official Swagger fields are modeled without natural-language parsing: `nghtOperYn`/`nghtDowExpln` and `wkndOperYn`/`wkndDowExpln`. `Y` and `N` map to explicit `operating` and `closed` schedule availability, and their explanations are retained verbatim as schedule notes. Any other or missing flag remains unmodeled/unknown.
+- `RankedOffice` retains the existing boolean `isOpen` and legacy `weekdayHours` for downstream callers, then adds `openState` (`open`, `closed`, or `unknown`) and the explicit `operatingSchedule`. A weekend `Y` is `unknown` unless its natural-language condition can be verified; it never becomes a speculative `true` or a false `closed` result.
+
+### Final Validation
+
+```sh
+cd minwon-run && npm test && npm run typecheck && TZ=UTC npm test
+cd ../naekkeo-recall && npm test && npm run typecheck
+```
+
+Both Minwon Run suites passed 3 files / 23 tests, including the `TZ=UTC` run; its typecheck passed. The untouched Naekkeo Recall suite also passed 3 files / 17 tests and its typecheck passed.

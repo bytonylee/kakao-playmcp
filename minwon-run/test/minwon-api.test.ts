@@ -30,6 +30,17 @@ test("normalizes a single office item and sends only documented query parameters
       stdgCd: "1168051000",
       serviceTypes: ["주민등록표 등본", "여권"],
       weekdayHours: { opensAt: "09:00", closesAt: "18:00" },
+      operatingSchedule: {
+        weekdayHours: { opensAt: "09:00", closesAt: "18:00" },
+        night: {
+          availability: "closed",
+          explanation: "매주 목요일 18:00 ~ 20:00 미운영",
+        },
+        weekend: {
+          availability: "operating",
+          explanation: "매월 첫번째 토요일 09:00 ~ 13:00 운영",
+        },
+      },
       latitude: 37.5172,
       longitude: 127.0473,
     },
@@ -63,13 +74,17 @@ test("normalizes official wait fields, aggregates counters, and retains the newe
 });
 
 test("follows totalCount pagination without a region filter and does not retain duplicated offices", async () => {
+  const firstPage = [
+    { csoSn: "1", csoNm: "첫째", roadNmAddr: "서울 1", lat: "37", lot: "127" },
+    ...Array.from({ length: 99 }, () => ({ csoSn: "2", csoNm: "둘째", lotnoAddr: "서울 2" })),
+  ];
   const pages = [
     {
       response: {
         header: { resultCode: "00" },
         body: {
           totalCount: "101",
-          items: { item: [{ csoSn: "1", csoNm: "첫째", roadNmAddr: "서울 1", lat: "37", lot: "127" }, { csoSn: "2", csoNm: "둘째", lotnoAddr: "서울 2" }] },
+          items: { item: firstPage },
         },
       },
     },
@@ -90,6 +105,45 @@ test("follows totalCount pagination without a region filter and does not retain 
   expect(fetch).toHaveBeenCalledTimes(2);
   expect(new URL(fetch.mock.calls[0][0] as string).searchParams.has("stdgCd")).toBe(false);
   expect(new URL(fetch.mock.calls[1][0] as string).searchParams.get("pageNo")).toBe("2");
+});
+
+test("does not request a second page when totalCount is absent and the first page is partial", async () => {
+  const fetch = vi.fn(async () => jsonResponse({
+    response: {
+      header: { resultCode: "00" },
+      body: { items: { item: [{ csoSn: "1", wtngCnt: "1" }] } },
+    },
+  }));
+  const api = new MinwonApi({ serviceKey: "secret-key", fetch });
+
+  await expect(api.listWaits()).resolves.toEqual([{ officeId: "1", waitingCount: 1 }]);
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+test("requests the next page without totalCount only after a full page", async () => {
+  const fullPage = Array.from({ length: 100 }, (_, index) => ({ csoSn: String(index), wtngCnt: "1" }));
+  const pages = [
+    { response: { header: { resultCode: "00" }, body: { items: { item: fullPage } } } },
+    { response: { header: { resultCode: "00" }, body: { items: { item: [] } } } },
+  ];
+  const fetch = vi.fn(async () => jsonResponse(pages[fetch.mock.calls.length - 1]));
+  const api = new MinwonApi({ serviceKey: "secret-key", fetch });
+
+  await expect(api.listWaits()).resolves.toHaveLength(100);
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+test("stops after a partial page even when totalCount reports additional pages", async () => {
+  const fullPage = Array.from({ length: 100 }, (_, index) => ({ csoSn: String(index), wtngCnt: "1" }));
+  const pages = [
+    { response: { header: { resultCode: "00" }, body: { totalCount: "300", items: { item: fullPage } } } },
+    { response: { header: { resultCode: "00" }, body: { totalCount: "300", items: { item: [{ csoSn: "100", wtngCnt: "1" }] } } } },
+  ];
+  const fetch = vi.fn(async () => jsonResponse(pages[fetch.mock.calls.length - 1]));
+  const api = new MinwonApi({ serviceKey: "secret-key", fetch });
+
+  await expect(api.listWaits()).resolves.toHaveLength(101);
+  expect(fetch).toHaveBeenCalledTimes(2);
 });
 
 test("treats K03 and empty items as current no-data and clears previously available live data", async () => {

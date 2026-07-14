@@ -1,3 +1,21 @@
+export type OfficeOpenState = "open" | "closed" | "unknown";
+
+export interface OperatingHours {
+  readonly opensAt: string;
+  readonly closesAt: string;
+}
+
+export interface ConditionalOperatingSchedule {
+  readonly availability: "operating" | "closed";
+  readonly explanation?: string;
+}
+
+export interface OfficeOperatingSchedule {
+  readonly weekdayHours?: OperatingHours;
+  readonly night?: ConditionalOperatingSchedule;
+  readonly weekend?: ConditionalOperatingSchedule;
+}
+
 export interface CivilOffice {
   readonly id: string;
   readonly name: string;
@@ -6,10 +24,8 @@ export interface CivilOffice {
   readonly lotNumberAddress?: string;
   readonly stdgCd?: string;
   readonly serviceTypes: readonly string[];
-  readonly weekdayHours?: {
-    readonly opensAt: string;
-    readonly closesAt: string;
-  };
+  readonly weekdayHours?: OperatingHours;
+  readonly operatingSchedule?: OfficeOperatingSchedule;
   readonly latitude?: number;
   readonly longitude?: number;
 }
@@ -30,6 +46,7 @@ export interface CivilVisitQuery {
 export interface RankedOffice extends CivilOffice {
   readonly serviceAvailable: boolean;
   readonly isOpen: boolean;
+  readonly openState: OfficeOpenState;
   readonly waitingCount?: number;
   readonly waitUpdatedAt?: string;
   readonly distanceMeters?: number;
@@ -57,10 +74,12 @@ export function rankOffices(
       const wait = waitsByOffice.get(office.id);
       const distanceMeters = calculateDistanceMeters(office, query);
 
+      const openState = openStateAt(office.operatingSchedule, office.weekdayHours, at);
       return {
         ...office,
         serviceAvailable: office.serviceTypes.includes(query.serviceType),
-        isOpen: isOpenAt(office.weekdayHours, at),
+        isOpen: openState === "open",
+        openState,
         waitingCount: wait?.waitingCount,
         waitUpdatedAt: wait?.updatedAt,
         distanceMeters,
@@ -76,19 +95,30 @@ export function rankOffices(
     );
 }
 
-function isOpenAt(hours: CivilOffice["weekdayHours"], at: Date): boolean {
-  if (!hours) {
-    return false;
-  }
-
+function openStateAt(
+  schedule: CivilOffice["operatingSchedule"],
+  legacyWeekdayHours: CivilOffice["weekdayHours"],
+  at: Date,
+): OfficeOpenState {
   const parts = KOREA_TIME_FORMATTER.formatToParts(at);
   const weekday = datePart(parts, "weekday");
   if (weekday === "Sun" || weekday === "Sat") {
-    return false;
+    return schedule?.weekend?.availability === "closed" ? "closed" : "unknown";
+  }
+
+  const hours = schedule?.weekdayHours ?? legacyWeekdayHours;
+  if (!hours) {
+    return "unknown";
   }
 
   const currentTime = Number(datePart(parts, "hour")) * 60 + Number(datePart(parts, "minute"));
-  return currentTime >= parseTime(hours.opensAt) && currentTime < parseTime(hours.closesAt);
+  if (currentTime >= parseTime(hours.opensAt) && currentTime < parseTime(hours.closesAt)) {
+    return "open";
+  }
+  if (currentTime >= parseTime(hours.closesAt) && schedule?.night?.availability === "operating") {
+    return "unknown";
+  }
+  return "closed";
 }
 
 function datePart(parts: Intl.DateTimeFormatPart[], type: Intl.DateTimeFormatPartTypes): string {
