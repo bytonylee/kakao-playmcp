@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { expect, test, vi } from "vitest";
 
+import { MemoryTtlCache } from "../src/cache.js";
 import { MinwonApi, MinwonApiError } from "../src/minwon-api.js";
 
 const fixturePath = new URL("./fixtures/", import.meta.url);
@@ -17,7 +18,7 @@ function jsonResponse(value: unknown): Response {
 }
 
 test("normalizes a single office item and sends only documented query parameters", async () => {
-  const fetch = vi.fn(async (_input: string) => jsonResponse(await fixture("minwon-info.json")));
+  const fetch = vi.fn(async (_input: string, _init?: RequestInit) => jsonResponse(await fixture("minwon-info.json")));
   const api = new MinwonApi({ serviceKey: "secret-key", fetch });
 
   await expect(api.listOffices("1168051000")).resolves.toEqual([
@@ -57,6 +58,27 @@ test("normalizes a single office item and sends only documented query parameters
     type: "JSON",
     stdgCd: "1168051000",
   });
+  expect(fetch.mock.calls[0][1]).toMatchObject({ redirect: "error" });
+});
+
+test("shares a bounded TTL cache across API clients", async () => {
+  let now = 0;
+  const cache = new MemoryTtlCache<Record<string, unknown>[]>({ ttlMs: 30_000, maxEntries: 2, now: () => now });
+  const fetch = vi.fn(async () => jsonResponse(await fixture("minwon-info.json")));
+  const first = new MinwonApi({ serviceKey: "secret-key", fetch, cache });
+  const second = new MinwonApi({ serviceKey: "secret-key", fetch, cache });
+
+  await first.listOffices("1168051000");
+  await second.listOffices("1168051000");
+  expect(fetch).toHaveBeenCalledTimes(1);
+
+  now = 30_001;
+  await second.listOffices("1168051000");
+  expect(fetch).toHaveBeenCalledTimes(2);
+
+  cache.set("other-a", []);
+  cache.set("other-b", []);
+  expect(cache.get("cso_info_v2:1168051000")).toBeUndefined();
 });
 
 test("accepts the live gateway's top-level K0 success envelope", async () => {
@@ -201,6 +223,63 @@ test("rejects malformed successful API responses", async () => {
   });
 });
 
+test("rejects an upstream page with more records than requested", async () => {
+  const items = Array.from({ length: 101 }, (_, index) => ({
+    csoSn: String(index),
+    csoNm: `민원실 ${index}`,
+    roadNmAddr: `서울 ${index}`,
+  }));
+  const fetch = vi.fn(async () => jsonResponse({
+    response: { header: { resultCode: "00" }, body: { totalCount: "101", items: { item: items } } },
+  }));
+  const api = new MinwonApi({ serviceKey: "secret-key", fetch });
+
+  await expect(api.listOffices()).rejects.toMatchObject({ code: "invalid_response" });
+});
+
+test("rejects unreasonably long upstream fields", async () => {
+  const fetch = vi.fn(async () => jsonResponse({
+    response: {
+      header: { resultCode: "00" },
+      body: { totalCount: "1", items: { item: { csoSn: "1", csoNm: "민원실", roadNmAddr: "가".repeat(10_001) } } },
+    },
+  }));
+  const api = new MinwonApi({ serviceKey: "secret-key", fetch });
+
+  await expect(api.listOffices()).rejects.toMatchObject({ code: "invalid_response" });
+});
+
+test("rejects an upstream response declared larger than two megabytes", async () => {
+  const payload = await fixture("minwon-info.json");
+  const fetch = vi.fn(async () => new Response(JSON.stringify(payload), {
+    headers: { "content-length": String(2 * 1024 * 1024 + 1), "content-type": "application/json" },
+  }));
+  const api = new MinwonApi({ serviceKey: "secret-key", fetch });
+
+  await expect(api.listOffices()).rejects.toMatchObject({ code: "invalid_response" });
+});
+
+test("stops reading a chunked upstream response after two megabytes", async () => {
+  const fetch = vi.fn(async () => new Response(new Uint8Array(2 * 1024 * 1024 + 1)));
+  const api = new MinwonApi({ serviceKey: "secret-key", fetch });
+
+  await expect(api.listOffices()).rejects.toMatchObject({ code: "invalid_response" });
+});
+
+test("caps the combined size of all pages in one upstream request", async () => {
+  const items = Array.from({ length: 100 }, (_, index) => ({ csoSn: String(index), wtngCnt: "1" }));
+  const responseBody = JSON.stringify({
+    response: { header: { resultCode: "00" }, body: { totalCount: "200", items: { item: items } } },
+  });
+  const fetch = vi.fn(async () => new Response(responseBody, {
+    headers: { "content-length": String(1_100_000), "content-type": "application/json" },
+  }));
+  const api = new MinwonApi({ serviceKey: "secret-key", fetch });
+
+  await expect(api.listWaits()).rejects.toMatchObject({ code: "invalid_response" });
+  expect(fetch).toHaveBeenCalledTimes(2);
+});
+
 test("converts an aborted upstream request to an explicit timeout error", async () => {
   const fetch = vi.fn((_: string, init?: RequestInit) => new Promise<Response>((_, reject) => {
     init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
@@ -210,6 +289,44 @@ test("converts an aborted upstream request to an explicit timeout error", async 
   await expect(api.listWaits()).rejects.toEqual(
     new MinwonApiError("timeout", "민원실 실시간 정보 조회 시간이 초과되었습니다."),
   );
+});
+
+test("applies the timeout to the whole paginated request instead of each page", async () => {
+  vi.useFakeTimers();
+  try {
+    const fullPage = Array.from({ length: 100 }, (_, index) => ({ csoSn: String(index), wtngCnt: "1" }));
+    const fetch = vi.fn((_input: string, init?: RequestInit) => {
+      if (fetch.mock.calls.length === 1) {
+        return new Promise<Response>((resolve) => {
+          setTimeout(() => resolve(jsonResponse({
+            response: {
+              header: { resultCode: "00" },
+              body: { totalCount: "200", items: { item: fullPage } },
+            },
+          })), 60);
+        });
+      }
+      return new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+      });
+    });
+    const api = new MinwonApi({ serviceKey: "secret-key", fetch, timeoutMs: 100 });
+    let settled = false;
+    const request = api.listWaits().catch((error: unknown) => {
+      settled = true;
+      return error;
+    });
+
+    await vi.advanceTimersByTimeAsync(100);
+    const settledAtDeadline = settled;
+    await vi.advanceTimersByTimeAsync(100);
+    const error = await request;
+
+    expect(settledAtDeadline).toBe(true);
+    expect(error).toEqual(new MinwonApiError("timeout", "민원실 실시간 정보 조회 시간이 초과되었습니다."));
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 test("reports unavailable live data without issuing a request when credentials are absent", async () => {

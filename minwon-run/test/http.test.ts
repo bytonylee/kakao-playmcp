@@ -67,6 +67,90 @@ test("requires JSON content for MCP requests", async () => {
   });
 });
 
+test("rejects JSON-RPC batches before creating an MCP server", async () => {
+  const createServer = vi.fn(createMcpServer);
+  const response = await request(createHttpApp({ createServer }))
+    .post("/mcp")
+    .set("content-type", "application/json")
+    .send([{ jsonrpc: "2.0", id: 1, method: "tools/list" }]);
+
+  expect(response.status).toBe(400);
+  expect(response.body).toMatchObject({ error: { message: "JSON-RPC batch requests are not supported" } });
+  expect(createServer).not.toHaveBeenCalled();
+});
+
+test("rejects untrusted browser origins before creating an MCP server", async () => {
+  const createServer = vi.fn(createMcpServer);
+  const response = await request(createHttpApp({ createServer }))
+    .post("/mcp")
+    .set("origin", "https://attacker.example")
+    .set("content-type", "application/json")
+    .send({ jsonrpc: "2.0", id: 1, method: "tools/list" });
+
+  expect(response.status).toBe(403);
+  expect(response.body).toMatchObject({ error: { message: "Origin not allowed" } });
+  expect(createServer).not.toHaveBeenCalled();
+});
+
+test("does not expose a process-wide request budget that one client can exhaust", async () => {
+  const app = createHttpApp({ maxConcurrentRequests: 1, log: () => {} });
+  const payload = {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-03-26",
+      capabilities: {},
+      clientInfo: { name: "test-client", version: "1.0.0" },
+    },
+  };
+
+  const statuses = [];
+  for (let index = 0; index < 121; index += 1) {
+    statuses.push((await request(app).post("/mcp").set("content-type", "application/json").send(payload)).status);
+  }
+
+  expect(new Set(statuses)).toEqual(new Set([200]));
+});
+
+test("limits concurrent MCP requests", async () => {
+  let releaseOffices!: (value: []) => void;
+  const offices = new Promise<[]>((resolve) => {
+    releaseOffices = resolve;
+  });
+  const listOffices = vi.fn(() => offices);
+  const api = {
+    liveDataAvailable: false,
+    listOffices,
+    listWaits: vi.fn(async () => []),
+  };
+  const app = createHttpApp({
+    createServer: () => createMcpServer({ api }),
+    maxConcurrentRequests: 1,
+  });
+  const firstRequest = request(app)
+    .post("/mcp")
+    .set("content-type", "application/json")
+    .set("accept", "application/json, text/event-stream")
+    .send({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/call",
+      params: { name: "compare_civil_offices", arguments: { serviceType: "등본" } },
+    })
+    .then((response) => response);
+  await vi.waitFor(() => expect(listOffices).toHaveBeenCalledTimes(1));
+
+  const response = await request(app)
+    .post("/mcp")
+    .set("content-type", "application/json")
+    .send({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+
+  expect(response.status).toBe(429);
+  releaseOffices([]);
+  expect((await firstRequest).status).toBe(200);
+});
+
 test("handles malformed JSON without exposing a parser error", async () => {
   const response = await request(createHttpApp())
     .post("/mcp")
@@ -99,6 +183,7 @@ test("rejects an MCP request body larger than 64KB", async () => {
 test("serves an MCP initialize response without assigning a session", async () => {
   const response = await request(createHttpApp())
     .post("/mcp")
+    .set("origin", "https://playmcp.kakao.com")
     .set("content-type", "application/json")
     .send({
       jsonrpc: "2.0",

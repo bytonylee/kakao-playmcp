@@ -13,17 +13,24 @@ export interface HttpAppOptions {
   readonly api?: RecallSafetyApi;
   readonly createApi?: () => RecallSafetyApi;
   readonly logger?: Logger;
+  readonly allowedOrigins?: readonly string[];
+  readonly maxConcurrentRequests?: number;
 }
+
+const DEFAULT_ALLOWED_ORIGINS = ["https://playmcp.kakao.com"];
+const DEFAULT_MAX_CONCURRENT_REQUESTS = 32;
 
 export function createHttpApp(options: HttpAppOptions = {}) {
   const app = express();
   const createApi = options.createApi ?? (() => options.api ?? new SafetyKoreaApi());
+  const requireAllowedOrigin = originGuard(options.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS);
+  const limitConcurrency = concurrencyGuard(options.maxConcurrentRequests ?? DEFAULT_MAX_CONCURRENT_REQUESTS);
 
   app.get("/healthz", (_request, response) => {
     response.status(200).json({ status: "ok" });
   });
 
-  app.post("/mcp", requireJson, express.json({ limit: "64kb", type: "application/json" }), async (request, response, next) => {
+  app.post("/mcp", requireAllowedOrigin, requireJson, express.json({ limit: "64kb", type: "application/json" }), rejectBatch, limitConcurrency, async (request, response, next) => {
     try {
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
@@ -52,9 +59,76 @@ export function createHttpApp(options: HttpAppOptions = {}) {
   return app;
 }
 
+function originGuard(allowedOrigins: readonly string[]): RequestHandler {
+  const allowed = new Set(allowedOrigins.map(canonicalOrigin));
+  return (request, response, next) => {
+    const origin = request.get("origin");
+    if (origin === undefined) {
+      next();
+      return;
+    }
+
+    try {
+      if (origin === canonicalOrigin(origin) && allowed.has(origin)) {
+        next();
+        return;
+      }
+    } catch {
+      // Invalid origins are rejected below.
+    }
+    response.status(403).json(jsonRpcError("Origin not allowed"));
+  };
+}
+
+function canonicalOrigin(origin: string): string {
+  const url = new URL(origin);
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new Error("Origin must use HTTP or HTTPS");
+  }
+  return url.origin;
+}
+
+function concurrencyGuard(maxConcurrentRequests: number): RequestHandler {
+  assertPositiveInteger(maxConcurrentRequests, "maxConcurrentRequests");
+  let activeRequests = 0;
+
+  return (_request, response, next) => {
+    if (activeRequests >= maxConcurrentRequests) {
+      response.set("Retry-After", "1").status(429).json(jsonRpcError("Too many requests"));
+      return;
+    }
+
+    activeRequests += 1;
+    let released = false;
+    const release = () => {
+      if (!released) {
+        released = true;
+        activeRequests -= 1;
+      }
+    };
+    response.once("finish", release);
+    response.once("close", release);
+    next();
+  };
+}
+
+function assertPositiveInteger(value: number, name: string): void {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${name} must be a positive integer`);
+  }
+}
+
 const requireJson: RequestHandler = (request, response, next) => {
   if (!request.is("application/json")) {
     response.status(415).json(jsonRpcError("Content-Type must be application/json"));
+    return;
+  }
+  next();
+};
+
+const rejectBatch: RequestHandler = (request, response, next) => {
+  if (Array.isArray(request.body)) {
+    response.status(400).json(jsonRpcError("JSON-RPC batch requests are not supported"));
     return;
   }
   next();

@@ -4,9 +4,13 @@ import type {
   RecallRecord,
   SearchCriteria,
 } from "./domain.js";
+import type { MemoryTtlCache } from "./cache.js";
 
 const RECALL_LIST_URL = "https://www.safetykorea.kr/openapi/api/recall/recallList.json";
 const CERTIFICATION_LIST_URL = "https://www.safetykorea.kr/openapi/api/cert/certificationList.json";
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_RECORDS = 5_000;
+const MAX_FIELD_LENGTH = 10_000;
 
 type FetchFunction = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -14,6 +18,7 @@ export interface SafetyKoreaApiOptions {
   readonly serviceId?: string;
   readonly fetch?: FetchFunction;
   readonly timeoutMs?: number;
+  readonly cache?: Pick<MemoryTtlCache<Record<string, unknown>[]>, "get" | "set">;
 }
 
 export class SafetyKoreaApiError extends Error {
@@ -30,6 +35,7 @@ export class SafetyKoreaApi {
   private readonly fetch: FetchFunction;
   private readonly serviceId: string | undefined;
   private readonly timeoutMs: number;
+  private readonly cache: Pick<MemoryTtlCache<Record<string, unknown>[]>, "get" | "set"> | undefined;
 
   availability: OfficialDataAvailability = "unavailable";
 
@@ -37,6 +43,7 @@ export class SafetyKoreaApi {
     this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.serviceId = options.serviceId;
     this.timeoutMs = options.timeoutMs ?? 2_000;
+    this.cache = options.cache;
   }
 
   async searchRecalls(criteria: SearchCriteria): Promise<RecallRecord[]> {
@@ -58,6 +65,13 @@ export class SafetyKoreaApi {
       return [];
     }
 
+    const cacheKey = `${list}:${key}:${value}`;
+    const cached = this.cache?.get(cacheKey);
+    if (cached !== undefined) {
+      this.availability = "available";
+      return cached;
+    }
+
     const baseUrl = list === "recall" ? RECALL_LIST_URL : CERTIFICATION_LIST_URL;
     const query = new URLSearchParams({ conditionKey: key, conditionValue: value });
     const controller = new AbortController();
@@ -66,14 +80,16 @@ export class SafetyKoreaApi {
     try {
       const response = await this.fetch(`${baseUrl}?${query.toString()}`, {
         headers: { AuthKey: this.serviceId },
+        redirect: "error",
         signal: controller.signal,
       });
       if (!response.ok) {
         throw upstreamError();
       }
 
-      const data = parseResponse(await response.json());
+      const data = parseResponse(await readBoundedJson(response));
       this.availability = "available";
+      this.cache?.set(cacheKey, data);
       return data;
     } catch (error) {
       this.availability = "unavailable";
@@ -87,6 +103,48 @@ export class SafetyKoreaApi {
     } finally {
       clearTimeout(timeout);
     }
+  }
+}
+
+async function readBoundedJson(response: Response): Promise<unknown> {
+  const declaredLength = response.headers.get("content-length");
+  if (declaredLength !== null && (!/^\d+$/.test(declaredLength) || Number(declaredLength) > MAX_RESPONSE_BYTES)) {
+    throw invalidResponse();
+  }
+  if (!response.body) {
+    throw invalidResponse();
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      totalBytes += value.byteLength;
+      if (totalBytes > MAX_RESPONSE_BYTES) {
+        await reader.cancel();
+        throw invalidResponse();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body));
+  } catch {
+    throw invalidResponse();
   }
 }
 
@@ -127,7 +185,7 @@ function parseResponse(payload: unknown): Record<string, unknown>[] {
   if (payload.resultCode !== "2000" && payload.resultCode !== 2000) {
     throw upstreamError();
   }
-  if (!Array.isArray(payload.resultData)) {
+  if (!Array.isArray(payload.resultData) || payload.resultData.length > MAX_RECORDS) {
     throw invalidResponse();
   }
   return payload.resultData.map(asRecord);
@@ -208,7 +266,7 @@ function optionalString(item: Record<string, unknown>, keys: readonly string[]):
   for (const key of keys) {
     const value = item[key];
     if (typeof value === "string" && value.trim() !== "") {
-      return value.trim();
+      return boundedString(value);
     }
     if (typeof value === "number" && Number.isFinite(value)) {
       return String(value);
@@ -221,7 +279,15 @@ function splitValues(value: unknown): string[] {
   if (typeof value !== "string") {
     return [];
   }
-  return value.split(",").map((entry) => entry.trim()).filter(Boolean);
+  return boundedString(value).split(",").map((entry) => entry.trim()).filter(Boolean);
+}
+
+function boundedString(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length > MAX_FIELD_LENGTH) {
+    throw invalidResponse();
+  }
+  return trimmed;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

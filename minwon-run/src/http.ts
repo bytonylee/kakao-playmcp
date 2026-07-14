@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import express, { type ErrorRequestHandler, type Request, type Response } from "express";
+import express, { type ErrorRequestHandler, type Request, type RequestHandler, type Response } from "express";
 
 import { createMcpServer } from "./mcp.js";
 
@@ -15,12 +15,19 @@ interface RequestLog {
 export interface HttpAppOptions {
   readonly createServer?: typeof createMcpServer;
   readonly log?: (entry: RequestLog) => void;
+  readonly allowedOrigins?: readonly string[];
+  readonly maxConcurrentRequests?: number;
 }
+
+const DEFAULT_ALLOWED_ORIGINS = ["https://playmcp.kakao.com"];
+const DEFAULT_MAX_CONCURRENT_REQUESTS = 32;
 
 export function createHttpApp(options: HttpAppOptions = {}) {
   const app = express();
   const createServer = options.createServer ?? createMcpServer;
   const log = options.log ?? ((entry: RequestLog) => console.info(JSON.stringify(entry)));
+  const requireAllowedOrigin = originGuard(options.allowedOrigins ?? DEFAULT_ALLOWED_ORIGINS);
+  const limitConcurrency = concurrencyGuard(options.maxConcurrentRequests ?? DEFAULT_MAX_CONCURRENT_REQUESTS);
 
   app.use((req, res, next) => {
     const requestId = randomUUID();
@@ -43,13 +50,12 @@ export function createHttpApp(options: HttpAppOptions = {}) {
 
   app.post(
     "/mcp",
+    requireAllowedOrigin,
+    requireJson,
     express.json({ limit: "64kb", type: "application/json" }),
+    rejectBatch,
+    limitConcurrency,
     async (req, res) => {
-      if (!req.is("application/json")) {
-        jsonRpcError(res, 415, "Content-Type must be application/json");
-        return;
-      }
-
       ensureMcpAccept(req);
       res.locals.tool = toolName(req);
       const server = createServer();
@@ -79,6 +85,82 @@ export function createHttpApp(options: HttpAppOptions = {}) {
 
   app.use(httpErrorHandler);
   return app;
+}
+
+function originGuard(allowedOrigins: readonly string[]): RequestHandler {
+  const allowed = new Set(allowedOrigins.map(canonicalOrigin));
+  return (req, res, next) => {
+    const origin = req.get("origin");
+    if (origin === undefined) {
+      next();
+      return;
+    }
+
+    try {
+      if (origin === canonicalOrigin(origin) && allowed.has(origin)) {
+        next();
+        return;
+      }
+    } catch {
+      // Invalid origins are rejected below.
+    }
+    jsonRpcError(res, 403, "Origin not allowed");
+  };
+}
+
+function canonicalOrigin(origin: string): string {
+  const url = new URL(origin);
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new Error("Origin must use HTTP or HTTPS");
+  }
+  return url.origin;
+}
+
+function concurrencyGuard(maxConcurrentRequests: number): RequestHandler {
+  assertPositiveInteger(maxConcurrentRequests, "maxConcurrentRequests");
+  let activeRequests = 0;
+
+  return (_req, res, next) => {
+    if (activeRequests >= maxConcurrentRequests) {
+      res.set("Retry-After", "1");
+      jsonRpcError(res, 429, "Too many requests");
+      return;
+    }
+
+    activeRequests += 1;
+    let released = false;
+    const release = () => {
+      if (!released) {
+        released = true;
+        activeRequests -= 1;
+      }
+    };
+    res.once("finish", release);
+    res.once("close", release);
+    next();
+  };
+}
+
+const requireJson: RequestHandler = (req, res, next) => {
+  if (!req.is("application/json")) {
+    jsonRpcError(res, 415, "Content-Type must be application/json");
+    return;
+  }
+  next();
+};
+
+const rejectBatch: RequestHandler = (req, res, next) => {
+  if (Array.isArray(req.body)) {
+    jsonRpcError(res, 400, "JSON-RPC batch requests are not supported");
+    return;
+  }
+  next();
+};
+
+function assertPositiveInteger(value: number, name: string): void {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error(`${name} must be a positive integer`);
+  }
 }
 
 const httpErrorHandler: ErrorRequestHandler = (error, _req, res, _next) => {

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 
 import { expect, test, vi } from "vitest";
 
+import { MemoryTtlCache } from "../src/cache.js";
 import { SafetyKoreaApi, SafetyKoreaApiError } from "../src/safety-korea-api.js";
 
 const fixturePath = new URL("./fixtures/", import.meta.url);
@@ -44,7 +45,28 @@ test("searches recalls by product name with the official AuthKey header", async 
   expect(requestUrl).toBe("https://www.safetykorea.kr/openapi/api/recall/recallList.json?conditionKey=recallProductName&conditionValue=%EC%95%84%EB%8F%99%EC%9A%A9+%EC%B9%B4%EC%8B%9C%ED%8A%B8");
   expect(requestInit.headers).toEqual({ AuthKey: "service-id" });
   expect(requestInit.signal).toBeInstanceOf(AbortSignal);
+  expect(requestInit.redirect).toBe("error");
   expect(api.availability).toBe("available");
+});
+
+test("shares a bounded TTL cache across API clients", async () => {
+  let now = 0;
+  const cache = new MemoryTtlCache<Record<string, unknown>[]>({ ttlMs: 30_000, maxEntries: 2, now: () => now });
+  const fetch = vi.fn(async () => jsonResponse(await fixture("recall-list.json")));
+  const first = new SafetyKoreaApi({ serviceId: "service-id", fetch, cache });
+  const second = new SafetyKoreaApi({ serviceId: "service-id", fetch, cache });
+
+  await first.searchRecalls({ productName: "카시트" });
+  await second.searchRecalls({ productName: "카시트" });
+  expect(fetch).toHaveBeenCalledTimes(1);
+
+  now = 30_001;
+  await second.searchRecalls({ productName: "카시트" });
+  expect(fetch).toHaveBeenCalledTimes(2);
+
+  cache.set("other-a", []);
+  cache.set("other-b", []);
+  expect(cache.get("recall:recallProductName:카시트")).toBeUndefined();
 });
 
 test.each([
@@ -107,6 +129,44 @@ test("rejects malformed successful official responses", async () => {
     name: "SafetyKoreaApiError",
     code: "invalid_response",
   });
+});
+
+test("rejects an upstream result set with more than five thousand records", async () => {
+  const resultData = Array.from({ length: 5_001 }, (_, index) => ({
+    recallUid: String(index),
+    recallProductName: "카시트",
+  }));
+  const fetch = vi.fn(async () => jsonResponse({ resultCode: "2000", resultData }));
+  const api = new SafetyKoreaApi({ serviceId: "service-id", fetch });
+
+  await expect(api.searchRecalls({ productName: "카시트" })).rejects.toMatchObject({ code: "invalid_response" });
+});
+
+test("rejects unreasonably long upstream fields", async () => {
+  const fetch = vi.fn(async () => jsonResponse({
+    resultCode: "2000",
+    resultData: [{ recallUid: "1", recallProductName: "가".repeat(10_001) }],
+  }));
+  const api = new SafetyKoreaApi({ serviceId: "service-id", fetch });
+
+  await expect(api.searchRecalls({ productName: "카시트" })).rejects.toMatchObject({ code: "invalid_response" });
+});
+
+test("rejects an upstream response declared larger than two megabytes", async () => {
+  const payload = await fixture("recall-list.json");
+  const fetch = vi.fn(async () => new Response(JSON.stringify(payload), {
+    headers: { "content-length": String(2 * 1024 * 1024 + 1), "content-type": "application/json" },
+  }));
+  const api = new SafetyKoreaApi({ serviceId: "service-id", fetch });
+
+  await expect(api.searchRecalls({ productName: "카시트" })).rejects.toMatchObject({ code: "invalid_response" });
+});
+
+test("stops reading a chunked upstream response after two megabytes", async () => {
+  const fetch = vi.fn(async () => new Response(new Uint8Array(2 * 1024 * 1024 + 1)));
+  const api = new SafetyKoreaApi({ serviceId: "service-id", fetch });
+
+  await expect(api.searchRecalls({ productName: "카시트" })).rejects.toMatchObject({ code: "invalid_response" });
 });
 
 test("converts an aborted request to an explicit timeout error", async () => {

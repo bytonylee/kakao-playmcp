@@ -1,10 +1,13 @@
 import type { CivilOffice, ConditionalOperatingSchedule, WaitStatus } from "./domain.js";
+import type { MemoryTtlCache } from "./cache.js";
 
 const API_BASE_URL = "https://apis.data.go.kr/B551982/cso_v2/";
 const OFFICE_PATH = "cso_info_v2";
 const WAIT_PATH = "cso_realtime_v2";
 const PAGE_SIZE = 100;
 const MAX_PAGES = 100;
+const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_FIELD_LENGTH = 10_000;
 
 type FetchFunction = (input: string, init?: RequestInit) => Promise<Response>;
 type Item = Record<string, unknown>;
@@ -12,12 +15,14 @@ type Item = Record<string, unknown>;
 interface ApiPage {
   readonly items: Item[];
   readonly totalCount?: number;
+  readonly bytesRead: number;
 }
 
 export interface MinwonApiOptions {
   readonly serviceKey?: string;
   readonly fetch?: FetchFunction;
   readonly timeoutMs?: number;
+  readonly cache?: Pick<MemoryTtlCache<Item[]>, "get" | "set">;
 }
 
 export class MinwonApiError extends Error {
@@ -34,6 +39,7 @@ export class MinwonApi {
   private readonly fetch: FetchFunction;
   private readonly serviceKey: string | undefined;
   private readonly timeoutMs: number;
+  private readonly cache: Pick<MemoryTtlCache<Item[]>, "get" | "set"> | undefined;
 
   liveDataAvailable = false;
 
@@ -41,6 +47,7 @@ export class MinwonApi {
     this.fetch = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.serviceKey = options.serviceKey;
     this.timeoutMs = options.timeoutMs ?? 2_000;
+    this.cache = options.cache;
   }
 
   async listOffices(stdgCd?: string): Promise<CivilOffice[]> {
@@ -70,21 +77,32 @@ export class MinwonApi {
       return [];
     }
 
-    let page = await this.requestPage(path, 1, stdgCd);
+    const cacheKey = `${path}:${stdgCd ?? ""}`;
+    const cached = this.cache?.get(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+
+    const deadline = Date.now() + this.timeoutMs;
+    let remainingBytes = MAX_RESPONSE_BYTES;
+    let page = await this.requestPage(path, 1, deadline, remainingBytes, stdgCd);
+    remainingBytes -= page.bytesRead;
     const items = [...page.items];
     const expectedPages = page.totalCount === undefined
       ? MAX_PAGES
       : Math.min(Math.ceil(page.totalCount / PAGE_SIZE), MAX_PAGES);
 
     for (let pageNo = 2; pageNo <= expectedPages && page.items.length === PAGE_SIZE; pageNo += 1) {
-      page = await this.requestPage(path, pageNo, stdgCd);
+      page = await this.requestPage(path, pageNo, deadline, remainingBytes, stdgCd);
+      remainingBytes -= page.bytesRead;
       items.push(...page.items);
     }
 
+    this.cache?.set(cacheKey, items);
     return items;
   }
 
-  private async requestPage(path: string, pageNo: number, stdgCd?: string): Promise<ApiPage> {
+  private async requestPage(path: string, pageNo: number, deadline: number, maxResponseBytes: number, stdgCd?: string): Promise<ApiPage> {
     const url = new URL(path, API_BASE_URL);
     url.search = new URLSearchParams({
       serviceKey: this.serviceKey!,
@@ -94,18 +112,23 @@ export class MinwonApi {
       ...(stdgCd ? { stdgCd } : {}),
     }).toString();
 
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      throw timeoutError();
+    }
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    const timeout = setTimeout(() => controller.abort(), remainingMs);
 
     try {
-      const response = await this.fetch(url.toString(), { signal: controller.signal });
+      const response = await this.fetch(url.toString(), { redirect: "error", signal: controller.signal });
       if (!response.ok) {
         throw new MinwonApiError("upstream_error", "민원실 정보를 불러오지 못했습니다.");
       }
-      return parsePage(await response.json());
+      const body = await readBoundedJson(response, maxResponseBytes);
+      return { ...parsePage(body.value), bytesRead: body.bytesRead };
     } catch (error) {
       if (controller.signal.aborted || isAbortError(error)) {
-        throw new MinwonApiError("timeout", "민원실 실시간 정보 조회 시간이 초과되었습니다.");
+        throw timeoutError();
       }
       if (error instanceof MinwonApiError) {
         throw error;
@@ -117,7 +140,60 @@ export class MinwonApi {
   }
 }
 
-function parsePage(payload: unknown): ApiPage {
+async function readBoundedJson(response: Response, maxBytes: number): Promise<{ readonly value: unknown; readonly bytesRead: number }> {
+  const declaredLength = response.headers.get("content-length");
+  const declaredBytes = declaredLength === null ? undefined : Number(declaredLength);
+  if (declaredLength !== null && (!/^\d+$/.test(declaredLength) || declaredBytes! > maxBytes)) {
+    throw invalidResponse();
+  }
+  if (!response.body) {
+    throw invalidResponse();
+  }
+
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      totalBytes += value.byteLength;
+      if (totalBytes > maxBytes) {
+        await reader.cancel();
+        throw invalidResponse();
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const body = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    body.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return {
+      value: JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)),
+      bytesRead: Math.max(totalBytes, declaredBytes ?? 0),
+    };
+  } catch (error) {
+    if (error instanceof MinwonApiError) {
+      throw error;
+    }
+    throw invalidResponse();
+  }
+}
+
+function timeoutError(): MinwonApiError {
+  return new MinwonApiError("timeout", "민원실 실시간 정보 조회 시간이 초과되었습니다.");
+}
+
+function parsePage(payload: unknown): Omit<ApiPage, "bytesRead"> {
   if (!isRecord(payload)) {
     throw invalidResponse();
   }
@@ -145,6 +221,9 @@ function parsePage(payload: unknown): ApiPage {
     throw invalidResponse();
   }
   if (Array.isArray(rawItems)) {
+    if (rawItems.length > PAGE_SIZE) {
+      throw invalidResponse();
+    }
     return { items: rawItems.map(asRecord), totalCount };
   }
   return { items: [asRecord(rawItems)], totalCount };
@@ -272,10 +351,10 @@ function normalizeOperatingTime(value: string | undefined): string | undefined {
 
 function splitServices(value: unknown): string[] {
   if (Array.isArray(value)) {
-    return value.filter((item): item is string => typeof item === "string" && item.trim() !== "").map((item) => item.trim());
+    return value.filter((item): item is string => typeof item === "string" && boundedString(item) !== "").map((item) => boundedString(item));
   }
   if (typeof value === "string") {
-    return value.split(",").map((item) => item.trim()).filter(Boolean);
+    return boundedString(value).split(",").map((item) => item.trim()).filter(Boolean);
   }
   return [];
 }
@@ -320,10 +399,18 @@ function optionalString(item: Item | undefined, keys: readonly string[]): string
   for (const key of keys) {
     const value = item[key];
     if (typeof value === "string" && value.trim() !== "") {
-      return value.trim();
+      return boundedString(value);
     }
   }
   return undefined;
+}
+
+function boundedString(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length > MAX_FIELD_LENGTH) {
+    throw invalidResponse();
+  }
+  return trimmed;
 }
 
 function optionalNumber(item: Item, keys: readonly string[]): number | undefined {
