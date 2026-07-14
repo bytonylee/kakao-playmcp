@@ -6,7 +6,8 @@ Last verified: 2026-07-15 (Asia/Seoul)
 
 - Public repository: `https://github.com/bytonylee/kakao-playmcp`
 - Deployment branch: `main`
-- Verified source revision: `e66498d`
+- Verified repository revision: `392e205`
+- Verified application-code revision: `e66498d`
 - Minwon Run Dockerfile: `minwon-run/Dockerfile`
 - My Recall Dockerfile: `naekkeo-recall/Dockerfile`
 - Minwon Run local image: `sha256:e0bfa8365fb8bc94c83a05ca982930dbcbb36b3703d4137ef2b46a03e0aab04a`
@@ -24,13 +25,12 @@ Last verified: 2026-07-15 (Asia/Seoul)
 ## External Registration
 
 - Minwon Run is saved in PlayMCP as an online draft with three tools.
-- My Recall registration data and four-tool connection have been verified; final draft save requires selecting the generated app icon in the browser.
+- My Recall is saved in PlayMCP as an online draft with four tools and the generated app icon.
 - PlayMCP in KC authentication succeeded, but the portal returned its contest-registration-expired state and prevented creation of new KC servers.
 - Temporary HTTPS endpoints are being used only to verify PlayMCP connectivity while KC registration is unavailable. They are not production endpoints and must not be submitted as KC endpoints.
+- The Kakao Business Form shows `참여 완료` for `AGENTIC PLAYER 10 참여 접수`, with the submission period ending at 2026-07-15 00:00.
 
 ## Pending External Gates
 
-- Select the 600x600 My Recall icon and save the PlayMCP draft.
 - Obtain supported KC endpoints if the contest portal is reopened or Kakao grants an exception.
 - Request PlayMCP review, wait for approval, switch both services to full public, and capture the resulting detail URLs.
-- Submit the Kakao form only after the public-state statements and URLs are true.
